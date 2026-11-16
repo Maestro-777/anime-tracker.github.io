@@ -187,7 +187,7 @@ Deno.serve(async(request:Request)=>{
     const paceFallback=async()=>{if(fallbackRequests++>0)await sleep(230);};
     for(const title of titles) {
       if(results.has(title))continue;
-      let anyProviderHealthy=false;const errors:string[]=[];
+      let anyProviderHealthy=providerState.AniList?.ok===true;const errors:string[]=[];
       try {
         await paceFallback();
         const metadata=await searchShikimori(title);anyProviderHealthy=true;
