@@ -1824,9 +1824,12 @@ async function searchPlayerCatalog(queryOverride){
  try{
   const payload=await anilibertyRequest('/app/search/releases?query='+encodeURIComponent(query));
   const releases=playerApiArray(payload);
-  const sorted=releases.map(r=>({...r,_match:playerApiTitleScore(query,r)})).filter(r=>r._match>=0.55).sort((a,b)=>b._match-a._match);
+  // AniLiberty already performs fuzzy title search. Do not discard its results
+  // using a second, stricter token filter: long/localized titles often differ.
+  const sorted=releases.map((r,i)=>({...r,_match:playerApiTitleScore(query,r),_apiOrder:i}))
+   .sort((a,b)=>b._match-a._match||a._apiOrder-b._apiOrder);
   renderPlayerSearchResults(sorted);
-  $('player-status').textContent=sorted.length?'Подходящих вариантов: '+sorted.length+'. Проверь название и выбери нужный релиз.':'По этому запросу не найдено достаточно похожих названий. Попробуй оригинальное или альтернативное название.';
+  $('player-status').textContent=sorted.length?'Результаты поиска AniLiberty: '+sorted.length+'. Сверь название и выбери нужный релиз.':'AniLiberty не нашёл релизы по этому запросу. Попробуй короткое оригинальное или альтернативное название.';
  }catch(error){$('player-search-results').innerHTML='<p class="player-status">'+escapeHTML(error.message)+'</p>';$('player-status').textContent='Поиск источников не удался.';}
  finally{btn.disabled=false;btn.textContent='Найти серии';}
 }
@@ -1892,7 +1895,6 @@ async function autoSearchPlayerCatalog(item){
  }
  const unique=[...new Map(combined.map(r=>[String(r.id??r.alias??playerApiName(r)),r])).values()]
   .map(r=>({...r,_match:Math.max(0,...queries.map(q=>playerApiTitleScore(q,r)))}))
-  .filter(r=>r._match>=0.55)
   .sort((a,b)=>b._match-a._match);
  renderPlayerSearchResults(unique);
  const exact=unique.filter(r=>playerApiTitleMatches(localTitles,r));
