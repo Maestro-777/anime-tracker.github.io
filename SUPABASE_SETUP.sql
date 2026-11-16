@@ -33,7 +33,7 @@ create policy "AnimeVault users can insert own records"
 create policy "AnimeVault users can update own records"
   on public.animevault_records for update
   to authenticated
-  using (auth.uid() = owner_id)
+  using ((select auth.uid()) = owner_id)
   with check ((select auth.uid()) = owner_id);
 
 grant select, insert, update on public.animevault_records to authenticated;
