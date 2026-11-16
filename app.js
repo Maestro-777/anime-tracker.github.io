@@ -574,15 +574,16 @@ async function enrichLibrary() {
       const needAni=batch.filter(x=>!x.anilistId&&x.metadataLookupStatus!=='found'&&(x.metadataLookupStatus!=='not_found'||Date.parse(x.metadataRetryAt||0)<=Date.now()));
       const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean).slice(0,3)))];
       let metadataMap=new Map(),metadataBatchError=null;
+      const needAniIds=new Set(needAni.map(x=>x.id));
       if(titles.length) {
         try { metadataMap=await fetchAnimeMetadataBatch(titles.slice(0,9)); }
-        catch(err) { metadataBatchError=err; console.warn('AniList batch failed:',err); }
+        catch(err) { metadataBatchError=err; console.warn('Metadata provider batch failed:',err); }
       }
       if(metadataBatchError?.retryAfter) await new Promise(resolve=>setTimeout(resolve,metadataBatchError.retryAfter));
       for(const item of batch) {
         if(enrichmentCancel) break;
         let result;
-        if(!item.anilistId&&metadataBatchError) {
+        if(needAniIds.has(item.id)&&metadataBatchError) {
           const attempts=(Number(item.metadataLookupAttempts)||0)+1,nowIso=new Date().toISOString();
           await db.anime.update(item.id,{metadataLookupStatus:'error',metadataLookupAttemptedAt:nowIso,metadataLookupAttempts:attempts,metadataRetryAt:new Date(Date.now()+metadataRetryDelay(attempts,metadataBatchError)).toISOString(),metadataLookupError:String(metadataBatchError?.message||metadataBatchError).slice(0,180)});
           result='error';
