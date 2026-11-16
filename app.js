@@ -918,7 +918,7 @@ const GOOGLE_DRIVE_FOLDER = 'AnimeVault Posters';
 const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
 });
-let cloudUser = null, syncBusy = false, syncTimer = null, syncRequested = false, lastAutoSyncAt = 0;
+let cloudUser = null, syncBusy = false, syncTimer = null, syncInterval = null, syncRequested = false, lastAutoSyncAt = 0;
 let driveTokenClient=null, driveTokenPending=null, driveAccessToken=null, driveTokenExpiresAt=0, driveFolderId=null;
 
 function initializeGoogleDrive() {
@@ -1355,13 +1355,13 @@ async function initCloudAuth() {
   supabaseClient.auth.onAuthStateChange((_event,nextSession)=>{
     setCloudSignedIn(nextSession?.user||null);
     if(nextSession?.user) scheduleCloudSync(true);
-    else {clearTimeout(syncTimer);syncRequested=false;}
+    else {clearTimeout(syncTimer);clearInterval(syncInterval);syncRequested=false;}
   });
   if(session?.user) await syncCloudNow();
   window.addEventListener('online',()=>scheduleCloudSync(true));
   window.addEventListener('focus',()=>scheduleCloudSync(false));
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleCloudSync(false);});
-  syncTimer=setInterval(()=>{if(cloudUser&&!document.hidden)scheduleCloudSync(false);},300000);
+  syncInterval=setInterval(()=>{if(cloudUser&&!document.hidden)scheduleCloudSync(false);},300000);
 }
 
 function bindEvents() {
