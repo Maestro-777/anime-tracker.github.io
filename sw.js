@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v137-russian-sync-optimization';
+const CACHE_NAME = 'animevault-shell-v138-card-queue-retry';
 const APP_SHELL = [
   './',
   './index.html',
