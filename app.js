@@ -429,7 +429,7 @@ async function enrichOne(item, metadataMap=null) {
       }
     }
     await db.anime.update(item.id,patch);
-    return russianOnly&&!patch.descriptionRu?'miss':'ok';
+    return patch.descriptionRuStatus==='error'?'error':(russianOnly&&!patch.descriptionRu?'miss':'ok');
   } catch(err) {
     console.warn('Metadata lookup failed:',item.titleRu,err);
     if(err.retryAfter) await new Promise(r=>setTimeout(r,err.retryAfter));
