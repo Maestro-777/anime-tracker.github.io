@@ -29,6 +29,12 @@ let deferredInstallPrompt = null;
 let searchQuery = '';
 let currentItems = [];
 let busy = false;
+let renderedCount = 0;
+const PAGE_SIZE = 48;
+let searchDebounceTimer = null;
+let firstLibraryLoad = true;
+let loadMoreObserver = null;
+let pageRenderPending = false;
 
 const $ = id => document.getElementById(id);
 const els = {
@@ -85,6 +91,8 @@ function switchTab(tab) {
   loadAnimeData();
 }
 async function loadAnimeData() {
+  const loading = $('library-loading');
+  if (firstLibraryLoad && loading) loading.classList.remove('hidden');
   try {
     let items = await db.anime.toArray();
     if (currentTab === 'favorite') items = items.filter(x => Number(x.favorite) === 1);
@@ -101,10 +109,15 @@ async function loadAnimeData() {
     items.sort((a,b) => (b.id || 0) - (a.id || 0));
     currentItems = items;
     renderList(items);
+    if (currentTab === 'update' || currentTab === 'stats') { els.list.classList.add('hidden'); els.empty.classList.add('hidden'); }
     refreshFilterOptions(await db.anime.toArray());
     $('library-count').textContent = `${items.length} ${plural(items.length, ['аниме','аниме','аниме'])}`;
     $('total-count').textContent = `${(await db.anime.count()).toLocaleString('ru-RU')} в библиотеке`;
+    firstLibraryLoad = false;
+    if (loading) loading.classList.add('hidden');
   } catch (err) {
+    firstLibraryLoad = false;
+    if (loading) loading.classList.add('hidden');
     console.error(err);
     showToast('Не удалось загрузить библиотеку. Проверьте IndexedDB.', 'error');
   }
@@ -115,23 +128,36 @@ const statusStyles = {
   'Смотрю':'status-watching', 'В планах':'status-planned',
   'Просмотрено':'status-completed', 'Отложено':'status-paused', 'Брошено':'status-dropped'
 };
-function renderList(items) {
-  els.list.replaceChildren();
+function renderList(items, append = false) {
+  if (!append) {
+    els.list.replaceChildren();
+    renderedCount = 0;
+  }
   els.list.classList.toggle('view-list', viewMode === 'list');
   els.empty.classList.toggle('hidden', items.length !== 0);
-  for (const item of items) {
-    const card = document.createElement('article');
-    card.className = `anime-card${viewMode === 'list' ? ' list-card' : ''}`;
-    const poster = safeURL(item.posterUrl) || 'icon-512.png';
-    const watch = safeURL(item.watchLink);
-    const title = escapeHTML(item.titleRu || 'Без названия');
-    const original = escapeHTML(item.titleOrig || '—');
-    const alt = escapeHTML(item.titleAlt || '');
-    const description = escapeHTML(item.description || '');
-    const status = normalizeStatus(item.status);
-    card.innerHTML = `
+
+  const fragment = document.createDocumentFragment();
+  const nextItems = items.slice(renderedCount, renderedCount + PAGE_SIZE);
+  for (const item of nextItems) fragment.appendChild(createAnimeCard(item));
+  els.list.appendChild(fragment);
+  renderedCount += nextItems.length;
+  updateRenderProgress(items.length);
+  observeLoadMore();
+}
+
+function createAnimeCard(item) {
+  const card = document.createElement('article');
+  card.className = `anime-card${viewMode === 'list' ? ' list-card' : ''}`;
+  const poster = safeURL(item.posterUrl) || 'icon-512.png';
+  const watch = safeURL(item.watchLink);
+  const title = escapeHTML(item.titleRu || 'Без названия');
+  const original = escapeHTML(item.titleOrig || '—');
+  const alt = escapeHTML(item.titleAlt || '');
+  const description = escapeHTML(item.description || '');
+  const status = normalizeStatus(item.status);
+  card.innerHTML = `
       <div class="poster-wrap">
-        <img class="poster" src="${escapeHTML(poster)}" alt="Постер: ${title}" loading="lazy" onerror="this.onerror=null;this.src='icon-512.png'">
+        <img class="poster" src="${escapeHTML(poster)}" alt="Постер: ${title}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='icon-512.png'">
         <div class="poster-shade"></div>
         <button class="favorite-btn ${item.favorite ? 'is-favorite' : ''}" data-action="favorite" aria-label="${item.favorite ? 'Убрать из избранного' : 'Добавить в избранное'}">${item.favorite ? '★' : '☆'}</button>
         <span class="status-badge ${statusStyles[status] || ''}">${escapeHTML(status)}</span>
@@ -143,7 +169,7 @@ function renderList(items) {
         ${viewMode === 'list' ? `<div class="list-details">${[item.year, item.format, item.totalEpisodes ? `${item.totalEpisodes} серий` : '', item.episodeDuration ? `${item.episodeDuration} мин/серия` : ''].filter(Boolean).map(x => `<span>${escapeHTML(String(x))}</span>`).join('')}</div>` : ''}
         ${viewMode === 'list' && Array.isArray(item.genres) && item.genres.length ? `<div class="list-genres">${item.genres.slice(0,5).map(g => `<span>${escapeHTML(g)}</span>`).join('')}${item.genres.length > 5 ? `<span class="genre-more">+${item.genres.length-5}</span>` : ''}</div>` : ''}
         <div class="card-meta">
-          ${`<div class="episode-stepper"><button data-action="episode-down" aria-label="Уменьшить число серий">−</button><span>${Math.max(0, Number(item.currentEpisode)||0) || (status==='Просмотрено' ? Number(item.totalEpisodes)||0 : 0)} сер.</span><button data-action="episode-up" aria-label="Увеличить число серий">+</button></div>`}
+          <div class="episode-stepper"><button data-action="episode-down" aria-label="Уменьшить число серий">−</button><span>${Math.max(0, Number(item.currentEpisode)||0) || (status==='Просмотрено' ? Number(item.totalEpisodes)||0 : 0)} сер.</span><button data-action="episode-up" aria-label="Увеличить число серий">+</button></div>
           ${watch ? `<a class="watch-link" href="${escapeHTML(watch)}" target="_blank" rel="noopener noreferrer">Смотреть ↗</a>` : ''}
         </div>
       </div>
@@ -151,9 +177,50 @@ function renderList(items) {
         <button class="edit-btn" data-action="edit">Редактировать</button>
         <button class="delete-btn" data-action="delete" aria-label="Удалить">Удалить</button>
       </div>`;
-    card.dataset.id = item.id;
-    els.list.appendChild(card);
+  card.dataset.id = item.id;
+  return card;
+}
+
+function updateRenderProgress(total) {
+  const progress = $('render-progress');
+  const button = $('btn-load-more');
+  const sentinel = $('load-more-sentinel');
+  if (progress) progress.textContent = total
+    ? `Показано ${renderedCount.toLocaleString('ru-RU')} из ${total.toLocaleString('ru-RU')}`
+    : '';
+  const remaining = Math.max(0, total - renderedCount);
+  if (button) {
+    button.classList.toggle('hidden', remaining === 0);
+    button.disabled = false;
+    button.textContent = remaining
+      ? `Показать ещё ${Math.min(PAGE_SIZE, remaining)} · осталось ${remaining}`
+      : '';
   }
+  if (sentinel) sentinel.classList.toggle('hidden', remaining === 0);
+}
+
+function loadNextPage() {
+  if (pageRenderPending || renderedCount >= currentItems.length) return;
+  pageRenderPending = true;
+  const button = $('btn-load-more');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Загружаю…';
+  }
+  requestAnimationFrame(() => {
+    renderList(currentItems, true);
+    pageRenderPending = false;
+  });
+}
+
+function observeLoadMore() {
+  const sentinel = $('load-more-sentinel');
+  if (!sentinel || !('IntersectionObserver' in window)) return;
+  if (loadMoreObserver) loadMoreObserver.disconnect();
+  loadMoreObserver = new IntersectionObserver(entries => {
+    if (entries.some(entry => entry.isIntersecting)) loadNextPage();
+  }, { rootMargin: '700px 0px' });
+  if (renderedCount < currentItems.length) loadMoreObserver.observe(sentinel);
 }
 async function changeEpisode(id, delta) {
   const item = await db.anime.get(Number(id));
@@ -205,7 +272,11 @@ function updatePosterPreview() {
 const ANILIST_ENDPOINT = 'https://graphql.anilist.co';
 async function fetchAnimeMetadata(title) {
   const query = `query ($search: String) { Media(search: $search, type: ANIME) { id idMal title { romaji english native } description(asHtml: false) episodes duration format seasonYear averageScore genres coverImage { extraLarge large medium } } }`;
-  const response = await fetch(ANILIST_ENDPOINT, {method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json'}, body:JSON.stringify({query,variables:{search:title.trim()}})});
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
+  let response;
+  try { response = await fetch(ANILIST_ENDPOINT, {method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json'}, body:JSON.stringify({query,variables:{search:title.trim()}}), signal:controller.signal}); }
+  finally { clearTimeout(timeoutId); }
   if (!response.ok) { const reset=Number(response.headers.get('X-RateLimit-Reset')||0); const wait=reset>0?Math.max(1000,reset*1000-Date.now()+1500):60000; const error=new Error(`AniList HTTP ${response.status}`); error.retryAfter=wait; throw error; }
   const json = await response.json();
   const m = json?.data?.Media;
@@ -218,49 +289,131 @@ async function fetchPosterUrl(title) {
   try { const m = await fetchAnimeMetadata(title); return m?.apiPosterUrl || ''; }
   catch (err) { console.warn('AniList lookup failed:', err); return ''; }
 }
+const ENRICH_LOG_KEY = 'animevault-enrichment-log-v1';
+let enrichmentLog = [];
+function loadEnrichmentLog() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ENRICH_LOG_KEY) || '[]');
+    enrichmentLog = Array.isArray(saved) ? saved.slice(-400) : [];
+  } catch { enrichmentLog = []; }
+  renderEnrichmentLogs();
+}
+function addEnrichmentLog(message, type='info') {
+  const entry = {time:new Date().toISOString(), message:String(message), type};
+  enrichmentLog.push(entry);
+  if (enrichmentLog.length > 400) enrichmentLog = enrichmentLog.slice(-400);
+  try { localStorage.setItem(ENRICH_LOG_KEY, JSON.stringify(enrichmentLog)); } catch {}
+  renderEnrichmentLogs();
+}
+function renderEnrichmentLogs() {
+  const host = $('enrich-log-list');
+  if (!host) return;
+  if (!enrichmentLog.length) {
+    host.innerHTML = '<div class="log-empty">Здесь появятся события обновления. Найденные данные и уже проверенные записи повторно обрабатываться не будут.</div>';
+    return;
+  }
+  host.replaceChildren(...enrichmentLog.slice(-160).map(entry => {
+    const row = document.createElement('div');
+    row.className = `enrich-log-entry log-${entry.type || 'info'}`;
+    const time = document.createElement('time');
+    time.dateTime = entry.time;
+    time.textContent = new Date(entry.time).toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const message = document.createElement('span');
+    message.textContent = entry.message;
+    row.append(time, message);
+    return row;
+  }));
+  host.scrollTop = host.scrollHeight;
+}
+function setEnrichmentSummary(text) {
+  const node = $('enrich-progress');
+  if (node) node.textContent = text;
+  const detail = $('enrich-progress-detail');
+  if (detail) detail.textContent = text;
+}
 async function enrichOne(item) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i);
-  if (!candidates.length) return 'miss';
+  if (!candidates.length) return 'no_title';
   try {
     let meta=null;
     for (const title of candidates) { meta=await fetchAnimeMetadata(title); if(meta) break; }
-    if (!meta) return 'miss';
-    const patch = {...meta, metadataUpdatedAt:new Date().toISOString()};
-    // Do not replace a manually supplied poster. API cover is a fallback only.
+    if (!meta) {
+      await db.anime.update(item.id, {metadataLookupAttemptedAt:new Date().toISOString(), metadataLookupStatus:'not_found'});
+      return 'miss';
+    }
+    const patch = {...meta, metadataUpdatedAt:new Date().toISOString(), metadataLookupAttemptedAt:new Date().toISOString(), metadataLookupStatus:'found'};
     if (!item.posterUrl && meta.apiPosterUrl) patch.posterUrl = meta.apiPosterUrl;
     await db.anime.update(item.id, patch);
     return 'ok';
-  } catch (err) { console.warn('Metadata lookup failed:', item.titleRu, err); if(err.retryAfter) await new Promise(r=>setTimeout(r,err.retryAfter)); return 'error'; }
+  } catch (err) {
+    console.warn('Metadata lookup failed:', item.titleRu, err);
+    if(err.retryAfter) await new Promise(r=>setTimeout(r,err.retryAfter));
+    await db.anime.update(item.id, {metadataLookupStatus:'error', metadataLookupError:String(err?.message || err).slice(0,180)}).catch(()=>{});
+    return 'error';
+  }
 }
-async function enrichLibrary(onlyMissing=false) {
+async function enrichLibrary() {
   if (enrichmentRunning) return;
+  if (!navigator.onLine) {
+    addEnrichmentLog('Нет подключения к интернету. Подключитесь и запустите обновление снова.', 'error');
+    showToast('Для обновления нужен интернет', 'error');
+    return;
+  }
   enrichmentRunning = true; enrichmentCancel = false;
   const all = await db.anime.toArray();
-  const queue = all.filter(x => !onlyMissing || !x.anilistId);
+  // Found entries and completed lookups (including "not found") are never searched again.
+  const queue = all.filter(x => !x.anilistId && !x.metadataLookupAttemptedAt && !x.metadataUpdatedAt &&
+    [x.titleOrig, x.titleRu, x.titleAlt].some(v => String(v || '').trim()));
   let done=0, found=0, missed=0, errors=0;
-  const button = $('btn-enrich-all');
+  const button = $('btn-enrich-start');
+  const stopButton = $('btn-stop-enrich');
   if (button) button.disabled = true;
-  $('btn-stop-enrich').classList.remove('hidden');
-  const missingButton = $('btn-enrich-missing'); if (missingButton) missingButton.disabled = true;
+  if (stopButton) stopButton.classList.remove('hidden');
+  $('enrich-total').textContent = queue.length.toLocaleString('ru-RU');
+  $('enrich-done').textContent = '0'; $('enrich-found').textContent = '0';
+  $('enrich-missed').textContent = '0'; $('enrich-errors').textContent = '0';
+  $('enrich-progress-bar').style.width = '0%';
+  addEnrichmentLog(`Запуск. В библиотеке ${all.length}; новых записей для поиска ${queue.length}.`, 'info');
+  if (!queue.length) {
+    $('enrich-progress-bar').style.width = '100%';
+    addEnrichmentLog('Новых записей для поиска нет. Уже найденные и проверенные записи пропущены.', 'success');
+    setEnrichmentSummary('Всё уже проверено — новых запросов не требуется.');
+  }
   try {
     for (let i=0; i<queue.length; i+=1) {
       if (enrichmentCancel) break;
-      const batch=queue.slice(i,i+1);
-      const results=await Promise.all(batch.map(enrichOne));
-      done += batch.length; found += results.filter(x=>x==='ok').length; missed += results.filter(x=>x==='miss').length; errors += results.filter(x=>x==='error').length;
-      if (els.enrichProgress) els.enrichProgress.textContent=`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`;
+      if (!navigator.onLine) {
+        addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.', 'error');
+        break;
+      }
+      const item = queue[i];
+      const result = await enrichOne(item);
+      done += 1;
+      if (result==='ok') { found += 1; addEnrichmentLog(`✓ Найдено: ${item.titleRu || item.titleOrig}`, 'success'); }
+      else if (result==='miss') { missed += 1; addEnrichmentLog(`— Не найдено: ${item.titleRu || item.titleOrig}. Повторно искать не будем.`, 'muted'); }
+      else if (result==='no_title') { missed += 1; addEnrichmentLog(`Пропуск записи без названия (ID ${item.id}).`, 'muted'); }
+      else { errors += 1; const failed=await db.anime.get(item.id); addEnrichmentLog(`Ошибка: ${item.titleRu || item.titleOrig} — ${failed?.metadataLookupError || 'временная ошибка сети/API'}. Попытку можно повторить позже.`, 'error'); }
+      $('enrich-done').textContent = done.toLocaleString('ru-RU');
+      $('enrich-found').textContent = found.toLocaleString('ru-RU');
+      $('enrich-missed').textContent = missed.toLocaleString('ru-RU');
+      $('enrich-errors').textContent = errors.toLocaleString('ru-RU');
+      $('enrich-progress-bar').style.width = `${queue.length ? done/queue.length*100 : 100}%`;
+      setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`);
       if (done % 10 === 0 || done === queue.length) await loadAnimeData();
-      if (i+1 < queue.length && !enrichmentCancel) await new Promise(r=>setTimeout(r,2200)); // Safe for AniList's currently reduced 30 requests/minute limit
+      // Sequential requests are intentionally used for mobile network stability and AniList rate limits.
+      if (i+1 < queue.length && !enrichmentCancel) await new Promise(r=>setTimeout(r,2300));
     }
     await loadAnimeData();
-    showToast(enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Обогащение завершено: найдено ${found}, нет совпадения ${missed}, ошибок ${errors}`, enrichmentCancel?'info':'success');
+    const status = enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Завершено: найдено ${found}, не найдено ${missed}, ошибок ${errors}`;
+    addEnrichmentLog(status, enrichmentCancel ? 'muted' : 'success');
+    showToast(enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Обновление завершено: найдено ${found}`, enrichmentCancel?'info':'success');
   } finally {
     enrichmentRunning=false;
-    if (button) {button.disabled=false;button.textContent='Обновить данные для всей библиотеки';}
-    if (missingButton) missingButton.disabled=false;
-    $('btn-stop-enrich').classList.add('hidden');
+    if (button) { button.disabled=false; button.textContent='Обновить только непроверенные'; }
+    if (stopButton) stopButton.classList.add('hidden');
   }
 }
+
 function refreshFilterOptions(items) {
   const apiGenres = Array.isArray(window.animeVaultApiGenres) ? window.animeVaultApiGenres : [];
   const storedGenres = items.flatMap(x => Array.isArray(x.genres) ? x.genres : []);
@@ -337,17 +490,25 @@ function setView(mode) {
   renderList(currentItems);
 }
 function switchStats(tab) {
-  const isStats=tab==='stats'; currentTab=isStats?'stats':tab;
+  const isStats=tab==='stats', isUpdate=tab==='update';
+  currentTab=(isStats || isUpdate)?tab:tab;
   els.statsPage.classList.toggle('hidden',!isStats);
-  els.list.classList.toggle('hidden',isStats); els.empty.classList.toggle('hidden',isStats || currentItems.length>0);
-  $('tab-all').classList.toggle('active',tab==='all'); $('tab-fav').classList.toggle('active',tab==='favorite'); $('tab-stats').classList.toggle('active',isStats);
-  $('tab-all').setAttribute('aria-pressed',String(tab==='all')); $('tab-fav').setAttribute('aria-pressed',String(tab==='favorite')); $('tab-stats').setAttribute('aria-pressed',String(isStats));
+  $('update-page').classList.toggle('hidden',!isUpdate);
+  els.list.classList.toggle('hidden',isStats || isUpdate);
+  els.empty.classList.toggle('hidden',isStats || isUpdate || currentItems.length>0);
+  $('load-more-wrap').classList.toggle('hidden',isStats || isUpdate);
+  $('tab-all').classList.toggle('active',tab==='all'); $('tab-fav').classList.toggle('active',tab==='favorite'); $('tab-stats').classList.toggle('active',isStats); $('tab-update').classList.toggle('active',isUpdate);
+  $('tab-all').setAttribute('aria-pressed',String(tab==='all')); $('tab-fav').setAttribute('aria-pressed',String(tab==='favorite')); $('tab-stats').setAttribute('aria-pressed',String(isStats)); $('tab-update').setAttribute('aria-pressed',String(isUpdate));
   $('mobile-library')?.classList.toggle('active',tab==='all');
   $('mobile-fav')?.classList.toggle('active',tab==='favorite');
   $('mobile-stats')?.classList.toggle('active',isStats);
-  document.querySelector('.toolbar').classList.toggle('hidden',isStats); document.querySelector('.stats').classList.toggle('hidden',isStats);
-  if(isStats) renderStatistics(); else loadAnimeData();
+  $('mobile-update')?.classList.toggle('active',isUpdate);
+  document.querySelector('.toolbar').classList.toggle('hidden',isStats || isUpdate);
+  const libraryStats=document.getElementById('library-stats');
+  if(libraryStats) libraryStats.classList.toggle('hidden',isStats || isUpdate);
+  if(isStats) renderStatistics(); else if(!isUpdate) loadAnimeData();
 }
+
 function renderStatistics() {
   db.anime.toArray().then(items=>{
     const counts=Object.fromEntries(STATUSES.map(s=>[s,items.filter(x=>normalizeStatus(x.status)===s).length]));
@@ -487,7 +648,7 @@ function parseCSV(text) {
     episode: find('текущая серия','серия','episode'),
     link: find('ссылка на просмотр','ссылка','watchlink','watch link'),
     poster: find('ссылка на постер','постер','poster'),
-    anilistId: find('anilist id'), malId:find('mal id'), apiTitle:find('название api'), description: find('описание','description'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api')
+    anilistId: find('anilist id'), malId:find('mal id'), apiTitle:find('название api'), description: find('описание','description'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
   };
   if (idx.ru < 0) throw new Error('Не найден столбец с русским названием.');
   const result=[];
@@ -515,7 +676,7 @@ function parseCSV(text) {
       currentEpisode: idx.episode >= 0 ? Math.max(0,parseInt(get('episode'),10)||0) : null,
       watchLink: idx.link >= 0 ? safeURL(get('link')) : '',
       posterUrl: idx.poster >= 0 ? safeURL(get('poster')) : '',
-      anilistId: get('anilistId') ? Number(get('anilistId')) : null, malId:get('malId')?Number(get('malId')):null, titleApi:get('apiTitle'), description:get('description'), totalEpisodes:idx.totalEpisodes>=0?(parseInt(get('totalEpisodes'),10)||null):null, episodeDuration:idx.duration>=0?(parseInt(get('duration'),10)||null):null, format:get('format'), year:idx.year>=0?(parseInt(get('year'),10)||null):null, score:idx.score>=0?(parseInt(get('score'),10)||null):null, genres:get('genres')?get('genres').split(/[,|]/).map(x=>x.trim()).filter(Boolean):[], apiPosterUrl:idx.apiPoster>=0?safeURL(get('apiPoster')):'', metadataUpdatedAt:get('metadataUpdated')
+      anilistId: get('anilistId') ? Number(get('anilistId')) : null, malId:get('malId')?Number(get('malId')):null, titleApi:get('apiTitle'), description:get('description'), totalEpisodes:idx.totalEpisodes>=0?(parseInt(get('totalEpisodes'),10)||null):null, episodeDuration:idx.duration>=0?(parseInt(get('duration'),10)||null):null, format:get('format'), year:idx.year>=0?(parseInt(get('year'),10)||null):null, score:idx.score>=0?(parseInt(get('score'),10)||null):null, genres:get('genres')?get('genres').split(/[,|]/).map(x=>x.trim()).filter(Boolean):[], apiPosterUrl:idx.apiPoster>=0?safeURL(get('apiPoster')):'', metadataUpdatedAt:get('metadataUpdated'), metadataLookupAttemptedAt:get('metadataAttempt'), metadataLookupStatus:get('metadataLookupStatus')
     });
   }
   return result;
@@ -552,7 +713,7 @@ async function importAnime(items) {
           watchLink: incoming.watchLink || old.watchLink || '',
           anilistId: incoming.anilistId || old.anilistId || null, malId:incoming.malId || old.malId || null, titleApi:incoming.titleApi || old.titleApi || '', description: incoming.description || old.description || '',
           totalEpisodes: incoming.totalEpisodes || old.totalEpisodes || null, episodeDuration: incoming.episodeDuration || old.episodeDuration || null,
-          format: incoming.format || old.format || '', year: incoming.year || old.year || null, score: incoming.score || old.score || null, genres: incoming.genres || old.genres || [], apiPosterUrl:incoming.apiPosterUrl || old.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || old.metadataUpdatedAt || ''
+          format: incoming.format || old.format || '', year: incoming.year || old.year || null, score: incoming.score || old.score || null, genres: incoming.genres || old.genres || [], apiPosterUrl:incoming.apiPosterUrl || old.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || old.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || old.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || old.metadataLookupStatus || ''
         };
         await db.anime.update(old.id,patch);
         const merged={...old,...patch};
@@ -565,7 +726,7 @@ async function importAnime(items) {
           titleRu:incoming.titleRu, titleOrig:incoming.titleOrig, titleAlt:incoming.titleAlt,
           status:incoming.status || 'В планах', favorite:incoming.favorite ? 1 : 0,
           currentEpisode:incoming.currentEpisode || 0, posterUrl:incoming.posterUrl || '',
-          watchLink:incoming.watchLink || '', anilistId:incoming.anilistId || null, malId:incoming.malId || null, titleApi:incoming.titleApi || '', description:incoming.description || '', totalEpisodes:incoming.totalEpisodes || null, episodeDuration:incoming.episodeDuration || null, format:incoming.format || '', year:incoming.year || null, score:incoming.score || null, genres:incoming.genres || [], apiPosterUrl:incoming.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || ''
+          watchLink:incoming.watchLink || '', anilistId:incoming.anilistId || null, malId:incoming.malId || null, titleApi:incoming.titleApi || '', description:incoming.description || '', totalEpisodes:incoming.totalEpisodes || null, episodeDuration:incoming.episodeDuration || null, format:incoming.format || '', year:incoming.year || null, score:incoming.score || null, genres:incoming.genres || [], apiPosterUrl:incoming.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || ''
         };
         const id=await db.anime.add(item);
         item.id=id; exact.set(duplicateKey(item),item); byRu.set(norm(item.titleRu),item);
@@ -603,11 +764,11 @@ function csvEscape(value) {
 async function handleCSVExport() {
   const items=await db.anime.toArray();
   if (!items.length) { showToast('Библиотека пуста', 'error'); return; }
-  const headers=['Русское название','Оригинальное название','Альтернативные названия','Добавлено в избранное','Статус просмотра','Текущая серия','Ссылка на просмотр','Ссылка на постер','AniList ID','MAL ID','Название API','Описание','Всего серий','Длительность серии (мин)','Формат','Год','Оценка','Жанры','Постер API','Дата обновления API'];
+  const headers=['Русское название','Оригинальное название','Альтернативные названия','Добавлено в избранное','Статус просмотра','Текущая серия','Ссылка на просмотр','Ссылка на постер','AniList ID','MAL ID','Название API','Описание','Всего серий','Длительность серии (мин)','Формат','Год','Оценка','Жанры','Постер API','Дата обновления API','Дата попытки поиска AniList','Статус поиска AniList'];
   const rows=[headers.join(';')];
   for (const x of items) rows.push([
     x.titleRu,x.titleOrig,x.titleAlt,Number(x.favorite)===1?'Добавлено':'Не добавлено',
-    normalizeStatus(x.status),x.currentEpisode||0,x.watchLink,x.posterUrl,x.anilistId||'',x.malId||'',x.titleApi||'',x.description||'',x.totalEpisodes||'',x.episodeDuration||'',x.format||'',x.year||'',x.score||'',(x.genres||[]).join(', '),x.apiPosterUrl||'',x.metadataUpdatedAt||''
+    normalizeStatus(x.status),x.currentEpisode||0,x.watchLink,x.posterUrl,x.anilistId||'',x.malId||'',x.titleApi||'',x.description||'',x.totalEpisodes||'',x.episodeDuration||'',x.format||'',x.year||'',x.score||'',(x.genres||[]).join(', '),x.apiPosterUrl||'',x.metadataUpdatedAt||'',x.metadataLookupAttemptedAt||'',x.metadataLookupStatus||''
   ].map(csvEscape).join(';'));
   const blob=new Blob(['\uFEFF'+rows.join('\r\n')],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);
@@ -670,8 +831,16 @@ function bindEvents() {
   $('mobile-add').addEventListener('click',()=>openModal());
   document.addEventListener('click',e=>{const menu=document.querySelector('.manage-menu');if(menu && !menu.contains(e.target))menu.open=false;});
   els.genre.addEventListener('change',e=>{filterGenre=e.target.value;loadAnimeData();}); els.format.addEventListener('change',e=>{filterFormat=e.target.value;loadAnimeData();}); els.year.addEventListener('change',e=>{filterYear=e.target.value;loadAnimeData();}); els.progress.addEventListener('change',e=>{filterProgress=e.target.value;loadAnimeData();});
-  $('btn-enrich-all').addEventListener('click',()=>enrichLibrary(false)); $('btn-enrich-missing').addEventListener('click',()=>enrichLibrary(true)); $('btn-stop-enrich').addEventListener('click',()=>{enrichmentCancel=true;els.enrichProgress.textContent+=' · остановка после текущего запроса…';});
-  els.search.addEventListener('input',e=>{searchQuery=e.target.value;loadAnimeData();});
+  $('tab-update').addEventListener('click',()=>switchStats('update'));
+  $('menu-update').addEventListener('click',()=>{document.querySelector('.manage-menu').open=false;switchStats('update');});
+  $('mobile-update').addEventListener('click',()=>switchStats('update'));
+  $('btn-enrich-start').addEventListener('click',enrichLibrary);
+  $('btn-stop-enrich').addEventListener('click',()=>{enrichmentCancel=true;setEnrichmentSummary('Остановка после текущего запроса…');addEnrichmentLog('Запрошена остановка. Дождёмся завершения текущего запроса.','muted');});
+  $('btn-clear-enrich-log').addEventListener('click',()=>{enrichmentLog=[];try{localStorage.removeItem(ENRICH_LOG_KEY);}catch{}renderEnrichmentLogs();addEnrichmentLog('Журнал очищен.','info');});
+  window.addEventListener('online',()=>addEnrichmentLog('Соединение восстановлено. Можно продолжить обновление.','success'));
+  window.addEventListener('offline',()=>addEnrichmentLog('Устройство перешло в офлайн. Текущая очередь остановится после запроса.','error'));
+  els.search.addEventListener('input',e=>{searchQuery=e.target.value;clearTimeout(searchDebounceTimer);searchDebounceTimer=setTimeout(()=>loadAnimeData(),180);});
+  $('btn-load-more').addEventListener('click',loadNextPage);
   els.filter.addEventListener('change',e=>{filterStatus=e.target.value;loadAnimeData();});
   els.csv.addEventListener('change',handleCSVImport);
   els.export.addEventListener('click',handleCSVExport);
@@ -700,6 +869,7 @@ function bindEvents() {
 }
 async function init() {
   bindEvents();
+  loadEnrichmentLog();
   setupInstallPrompt();
   updateStatusField();
   try {
@@ -714,6 +884,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.2';
+  $('app-version').textContent='v1.3.2';
 }
 document.addEventListener('DOMContentLoaded',init);

@@ -225,6 +225,31 @@
       .list-card .card-actions{padding:7px 11px 10px 55px}
     }
 
+  
+    /* Progressive rendering: low DOM count, visible loading state, mobile friendly */
+    .library-loading{margin:14px 0 18px;padding:16px;border:1px solid #303039;border-radius:16px;background:#151519}
+    .loading-head{display:flex;align-items:center;gap:10px;color:#d4d4d8;font-size:13px;margin-bottom:13px}
+    .loading-spinner{width:18px;height:18px;flex:0 0 auto;border:2px solid #52525b;border-top-color:#f87171;border-radius:50%;animation:av-spin .8s linear infinite}
+    @keyframes av-spin{to{transform:rotate(360deg)}}
+    .skeleton-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .skeleton-grid i{height:100px;border-radius:10px;background:linear-gradient(100deg,#222228 20%,#33333c 38%,#222228 58%);background-size:200% 100%;animation:av-shimmer 1.3s ease-in-out infinite}
+    @keyframes av-shimmer{to{background-position-x:-200%}}
+    .load-more-wrap{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:9px;padding:18px 8px 30px}
+    .render-progress{font-size:12px;color:#a1a1aa;font-variant-numeric:tabular-nums}
+    .load-more-sentinel{height:1px;width:100%}
+    #btn-load-more{min-width:210px;min-height:44px;border-radius:13px}
+    #btn-load-more:disabled{opacity:.6;cursor:wait}
+    @media(max-width:760px){.skeleton-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.skeleton-grid i{height:80px}}
+    @media(prefers-reduced-motion:reduce){.loading-spinner,.skeleton-grid i{animation:none}}
+
+
+    .update-page{margin:24px 0 50px;display:grid;gap:16px;min-width:0}
+    .update-heading,.update-controls,.update-progress-panel,.update-log-panel{background:linear-gradient(145deg,#17171c,#101014);border:1px solid #303039;border-radius:18px;padding:20px}
+    .update-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}.update-heading h1{font-size:clamp(22px,4vw,30px);margin:5px 0}.update-heading p{margin:0;color:#a1a1aa;font-size:13px;max-width:700px}.eyebrow{font-size:10px;letter-spacing:.14em;color:#f87171;font-weight:800}.update-shield{width:54px;height:54px;display:grid;place-items:center;border-radius:17px;background:#7f1d1d33;color:#f87171;font-size:28px;flex:none}
+    .update-controls{display:flex;justify-content:space-between;align-items:center;gap:18px}.update-action-copy{display:grid;gap:4px}.update-action-copy strong{font-size:15px}.update-action-copy span,.update-log-head small{font-size:12px;color:#92929c}.update-buttons{display:flex;gap:8px;flex-wrap:wrap}.update-buttons .btn{min-height:44px}.update-progress-head,.update-log-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.update-progress-head strong,.update-log-head strong{font-size:14px}.update-progress-head span{font-size:12px;color:#a1a1aa;text-align:right}.update-progress-track{height:10px;background:#292930;border-radius:20px;overflow:hidden;margin:15px 0}.update-progress-track>div{height:100%;width:0;background:linear-gradient(90deg,#b91c1c,#f87171);border-radius:20px;transition:width .25s}.update-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px}.update-metrics>div{padding:11px;border:1px solid #303039;border-radius:12px;background:#0c0c0f;min-width:0}.update-metrics small{display:block;color:#92929c;font-size:10px}.update-metrics strong{display:block;font-size:21px;margin-top:3px;font-variant-numeric:tabular-nums}.update-hint{color:#71717a;font-size:11px;margin:13px 0 0}.update-log-head{margin-bottom:13px}.update-log-head>div{display:grid;gap:3px}.enrich-log-list{display:flex;flex-direction:column;gap:1px;max-height:440px;overflow:auto;overscroll-behavior:contain;border:1px solid #292930;border-radius:12px;background:#0b0b0e;padding:7px}.enrich-log-entry{display:grid;grid-template-columns:76px minmax(0,1fr);gap:9px;padding:8px 7px;border-bottom:1px solid #ffffff0a;font-size:12px;overflow-wrap:anywhere}.enrich-log-entry time{font-variant-numeric:tabular-nums;color:#71717a}.log-success span{color:#86efac}.log-error span{color:#fca5a5}.log-muted span{color:#a1a1aa}.log-empty{padding:20px;text-align:center;color:#71717a;font-size:12px}
+    @media(max-width:760px){.update-page{margin:14px 0 30px;gap:11px}.update-heading,.update-controls,.update-progress-panel,.update-log-panel{padding:15px;border-radius:15px}.update-heading{align-items:flex-start}.update-shield{width:42px;height:42px;border-radius:13px}.update-controls{align-items:stretch;flex-direction:column}.update-buttons{display:grid;grid-template-columns:1fr}.update-buttons .btn{width:100%;min-height:48px}.update-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.update-metrics>div{padding:9px}.update-metrics strong{font-size:19px}.update-progress-head{align-items:flex-start;flex-direction:column}.update-progress-head span{text-align:left}.enrich-log-list{max-height:48vh}.enrich-log-entry{grid-template-columns:66px minmax(0,1fr);font-size:11px;padding:9px 5px}}
+    @media(max-width:620px){.mobile-dock{gap:1px;padding:6px 7px}.dock-item{padding:4px 1px}.dock-item small{font-size:8px}.dock-add{width:43px;height:43px;margin:0 2px}.update-heading p{font-size:12px}}
+
   </style>
 </head>
 <body>
@@ -234,15 +259,16 @@
       <div class="brand"><div class="brand-mark"></div><div class="brand-name">Anime<span>Vault</span></div></div>
       <nav class="tabs" aria-label="Фильтр библиотеки">
         <button id="tab-all" class="tab active" aria-pressed="true">Все медиа</button>
-        <button id="tab-fav" class="tab" aria-pressed="false">★ Избранное</button><button id="tab-stats" class="tab" aria-pressed="false">▥ Статистика</button>
+        <button id="tab-fav" class="tab" aria-pressed="false">★ Избранное</button><button id="tab-stats" class="tab" aria-pressed="false">▥ Статистика</button><button id="tab-update" class="tab" aria-pressed="false">↻ Обновление</button>
       </nav>
       <div class="header-actions">
 <button id="btn-add-modal" class="btn btn-primary">add</button>
-<button id="btn-enrich-all" class="btn">API</button>
+
         <details class="manage-menu">
           <summary class="btn" aria-label="Управление библиотекой">⋯</summary>
           <div class="manage-popover">
             <label class="menu-action">⇧ Импорт CSV<input type="file" id="csv-file" accept=".csv,text/csv"></label>
+            <button id="menu-update" class="menu-action" type="button">↻ Обновление данных</button>
             <button id="btn-export" class="menu-action">⇩ Экспорт CSV</button>
             <button id="btn-backup" class="menu-action">▣ Резервная копия JSON</button>
             <button id="btn-install" class="menu-action hidden">＋ Установить приложение</button>
@@ -279,21 +305,35 @@
         </div>
       </div>
     </section>
-    <div class="stats"><span id="library-count">0 аниме</span><span id="total-count">0 в библиотеке</span><span id="bulk-meta-state"></span></div>
+    <div class="stats" id="library-stats"><span id="library-count">0 аниме</span><span id="total-count">0 в библиотеке</span><span id="bulk-meta-state"></span></div>
+    <div id="library-loading" class="library-loading" aria-live="polite">
+      <div class="loading-head"><span class="loading-spinner"></span><strong>Подготавливаем вашу библиотеку…</strong></div>
+      <div class="skeleton-grid"><i></i><i></i><i></i><i></i></div>
+    </div>
     <section id="anime-list" class="grid" aria-live="polite"></section>
+    <div class="load-more-wrap" id="load-more-wrap">
+      <span id="render-progress" class="render-progress"></span>
+      <div id="load-more-sentinel" class="load-more-sentinel" aria-hidden="true"></div>
+      <button id="btn-load-more" class="btn hidden" type="button">Показать ещё</button>
+    </div>
     <section id="stats-page" class="stats-page hidden">
       <div class="stats-kpis" id="stats-kpis"></div>
       <div class="charts-grid"><div class="chart-panel"><h3>Распределение по статусам</h3><div id="status-chart"></div></div><div class="chart-panel"><h3>Просмотренные серии и время</h3><div id="watch-chart"></div></div><div class="chart-panel"><h3>Библиотека по форматам</h3><div id="format-chart"></div></div><div class="chart-panel"><h3>Недостающие данные</h3><div id="metadata-chart"></div></div></div>
     </section>
     <section id="empty-state" class="empty-state hidden"><strong>Ваша медиатека пуста или ничего не найдено</strong><small>Импортируйте CSV или измените фильтры</small></section>
-    <div class="stats" style="margin-top:18px;gap:10px;flex-wrap:wrap"><span>Сведения об аниме: AniList API</span><button id="btn-enrich-all" class="btn">Обновить данные для всей библиотеки</button><button id="btn-enrich-missing" class="btn">Только без данных</button><button id="btn-stop-enrich" class="btn hidden">Остановить</button><span id="enrich-progress" class="api-progress"></span></div>
+    <section id="update-page" class="update-page hidden" aria-labelledby="update-title">
+      <div class="update-heading"><div><span class="eyebrow">ANILIST · API</span><h1 id="update-title">Обновление данных</h1><p>Поиск запускается только для записей, которые ещё ни разу не проверялись. Найденные и уже проверенные записи пропускаются.</p></div><span class="update-shield">↻</span></div>
+      <div class="update-controls"><div class="update-action-copy"><strong>Обогатить библиотеку</strong><span>Данные о жанрах, формате, годе, сериях, рейтинге, описании и постере.</span></div><div class="update-buttons"><button id="btn-enrich-start" class="btn btn-primary" type="button">Обновить только непроверенные</button><button id="btn-stop-enrich" class="btn hidden" type="button">Остановить</button></div></div>
+      <div class="update-progress-panel"><div class="update-progress-head"><strong>Прогресс обработки</strong><span id="enrich-progress">Ожидает запуска</span></div><div class="update-progress-track"><div id="enrich-progress-bar"></div></div><div class="update-metrics"><div><small>В очереди</small><strong id="enrich-total">—</strong></div><div><small>Обработано</small><strong id="enrich-done">0</strong></div><div><small>Найдено</small><strong id="enrich-found">0</strong></div><div><small>Не найдено</small><strong id="enrich-missed">0</strong></div><div><small>Ошибки</small><strong id="enrich-errors">0</strong></div></div><p id="enrich-progress-detail" class="update-hint">Запросы выполняются последовательно — так надёжнее на мобильной сети.</p></div>
+      <div class="update-log-panel"><div class="update-log-head"><div><strong>Журнал обновления</strong><small>События сохраняются на этом устройстве и остаются после закрытия страницы.</small></div><button id="btn-clear-enrich-log" class="btn" type="button">Очистить</button></div><div id="enrich-log-list" class="enrich-log-list" role="log" aria-live="polite" aria-relevant="additions"></div></div>
+    </section>
     <p id="import-status" class="hidden" aria-live="polite"></p>
   </main>
   <nav class="mobile-dock" aria-label="Основная навигация">
     <button id="mobile-library" class="dock-item active" type="button"><span>▦</span><small>Библиотека</small></button>
     <button id="mobile-fav" class="dock-item" type="button"><span>★</span><small>Избранное</small></button>
     
-    <button id="mobile-stats" class="dock-item" type="button"><span>▥</span><small>Статистика</small></button>
+    <button id="mobile-stats" class="dock-item" type="button"><span>▥</span><small>Статистика</small></button><button id="mobile-update" class="dock-item" type="button"><span>↻</span><small>Обновление</small></button>
 <button id="mobile-add" class="dock-add" type="button" aria-label="Добавить аниме">＋</button>
   </nav>
   <footer class="footer"><span>AnimeVault · Личная библиотека аниме</span><span id="app-version">PWA</span></footer>
