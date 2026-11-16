@@ -368,16 +368,36 @@ async function fetchAnimeMetadata(title) {
   if(row?.status==='error') throw new Error(row.error||'Все источники поиска аниме недоступны.');
   return row?.metadata||null;
 }
+const DESCRIPTION_TRANSLATION_COOLDOWN_KEY = 'animevault-translation-cooldown-until-v1';
+function getDescriptionTranslationCooldown() {
+  try { return Math.max(0, Number(localStorage.getItem(DESCRIPTION_TRANSLATION_COOLDOWN_KEY)) || 0); }
+  catch { return 0; }
+}
+function setDescriptionTranslationCooldown(retryAfterMs) {
+  const until = Date.now() + Math.max(60_000, Math.min(6 * 60 * 60_000, Number(retryAfterMs) || 15 * 60_000));
+  try { localStorage.setItem(DESCRIPTION_TRANSLATION_COOLDOWN_KEY, String(until)); } catch {}
+  return until;
+}
 async function fetchRussianDescription(item) {
   if(!supabaseClient) throw new Error('Supabase SDK недоступен для получения русского описания.');
   const {data:{session}}=await supabaseClient.auth.getSession();
   if(!session?.access_token) throw new Error('Для получения русского описания войдите в AnimeVault.');
-  const response=await fetch(`${SUPABASE_URL}/functions/v1/fetch-anime-description`,{
+  const response=await fetch(SUPABASE_URL+'/functions/v1/fetch-anime-description',{
     method:'POST',
-    headers:{'Authorization':`Bearer ${session.access_token}`,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
+    headers:{'Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
     body:JSON.stringify({title:item.titleRu||item.titleOrig||item.titleApi||'',malId:item.malId||null,description:item.description||''})
   });
-  if(!response.ok){const detail=await response.text().catch(()=>'');throw new Error(`Русское описание HTTP ${response.status}: ${detail.slice(0,180)}`);}
+  if(!response.ok){
+    const detail=await response.text().catch(()=>'');
+    let payload={}; try { payload=JSON.parse(detail); } catch {}
+    const header=response.headers.get('Retry-After');
+    const headerMs=header?(Number.isFinite(Number(header))?Number(header)*1000:Math.max(0,Date.parse(header)-Date.now())):0;
+    const cooldownUntil=response.status===429?setDescriptionTranslationCooldown(headerMs || Number(payload.retryAfterSeconds)*1000 || 15*60_000):0;
+    const error=new Error('Русское описание HTTP '+response.status+': '+String(payload.error||detail).slice(0,180));
+    error.status=response.status;
+    if(cooldownUntil) error.retryAfterMs=cooldownUntil-Date.now();
+    throw error;
+  }
   return response.json();
 }
 async function fetchPosterUrl(title) {
@@ -480,7 +500,12 @@ async function enrichOne(item, metadataMap=null) {
       patch.descriptionRuError='';
     }
     if(!patch.descriptionRu && (!item.descriptionRu || item.descriptionRuStatus==='error')) {
-      try {
+      const translationCooldownUntil=getDescriptionTranslationCooldown();
+      if(translationCooldownUntil>Date.now()) {
+        patch.descriptionRuStatus='error';
+        patch.descriptionRuRetryAt=new Date(translationCooldownUntil).toISOString();
+        patch.descriptionRuError='Перевод временно приостановлен из-за ограничения сервиса; повтор будет выполнен автоматически.';
+      } else try {
         const ru=await fetchRussianDescription(merged);
         if(ru?.descriptionRu) {
           patch.descriptionRu=String(ru.descriptionRu).slice(0,4000);
@@ -494,7 +519,7 @@ async function enrichOne(item, metadataMap=null) {
         const attempts=(Number(item.descriptionRuAttempts)||0)+1;
         patch.descriptionRuStatus='error';
         patch.descriptionRuAttempts=attempts;
-        patch.descriptionRuRetryAt=new Date(Date.now()+Math.min(24*60*60*1000,30*60*1000*Math.pow(2,Math.max(0,attempts-1)))).toISOString();
+        patch.descriptionRuRetryAt=new Date(Date.now()+(err?.retryAfterMs||Math.min(24*60*60*1000,30*60*1000*Math.pow(2,Math.max(0,attempts-1))))).toISOString();
         patch.descriptionRuError=String(err?.message||err).slice(0,180);
       }
     }
