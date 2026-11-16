@@ -447,7 +447,8 @@ async function enrichOne(item, metadataMap=null) {
       if(!meta) { russianOnly=true;meta={}; }
     }
     const checkedAt=new Date().toISOString();
-    const patch={...meta,metadataUpdatedAt:meta.anilistId?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:null,metadataLookupStatus:meta.metadataProvider||item.metadataLookupStatus==='found'?'found':(russianOnly?'not_found':'found')};
+    const lookupFound=!!(meta.metadataProvider||meta.anilistId||item.metadataLookupStatus==='found'||item.anilistId);
+    const patch={...meta,metadataUpdatedAt:lookupFound?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:null,metadataLookupStatus:lookupFound?'found':'not_found'};
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
     if(!item.descriptionRu && meta.metadataProvider==='Shikimori' && /[А-Яа-яЁё]/.test(String(meta.description||''))) {
