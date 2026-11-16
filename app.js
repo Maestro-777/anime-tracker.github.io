@@ -1,11 +1,11 @@
 // Инициализация базы данных Dexie.js
 const db = new Dexie('AnimeTrackerDB');
-db.version(3).stores({
+db.version(4).stores({
   anime: '++id, titleRu, titleOrig, titleAlt, favorite, status, currentEpisode, watchLink, posterUrl'
 });
 
 // Состояние приложения
-let currentTab = 'all'; // 'all' или 'favorite'
+let currentTab = 'all'; 
 let filterStatus = 'Все';
 let searchQuery = '';
 
@@ -26,28 +26,22 @@ const btnCloseModal = document.getElementById('btn-close-modal');
 const formStatus = document.getElementById('form-status');
 const formEpisodesContainer = document.getElementById('form-episodes-container');
 
-// Инициализация PWA Service Worker
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(err => console.log('SW Error:', err));
 }
 
-// Слушатели событий при загрузке
 document.addEventListener('DOMContentLoaded', () => {
   loadAnimeData();
   
-  // Управление вкладками
   tabAll.addEventListener('click', () => switchTab('all'));
   tabFav.addEventListener('click', () => switchTab('favorite'));
   
-  // Живые фильтры
   searchInput.addEventListener('input', (e) => { searchQuery = e.target.value.toLowerCase(); loadAnimeData(); });
   filterStatusSelect.addEventListener('change', (e) => { filterStatus = e.target.value; loadAnimeData(); });
 
-  // Работа с файлами
   csvFileInput.addEventListener('change', handleCSVImport);
   btnExport.addEventListener('click', handleCSVExport);
 
-  // Модалка
   btnAddModal.addEventListener('click', () => openModal());
   btnCloseModal.addEventListener('click', closeModal);
   animeForm.addEventListener('submit', handleFormSubmit);
@@ -75,18 +69,15 @@ function toggleModalEpisodeField() {
   }
 }
 
-// Загрузка и рендеринг данных из базы IndexedDB
 async function loadAnimeData() {
   let collection = db.anime.toCollection();
 
-  // Фильтр по вкладке Избранное
   if (currentTab === 'favorite') {
     collection = db.anime.where('favorite').equals(1);
   }
 
   let items = await collection.toArray();
 
-  // Локальная фильтрация по статусу и поиску
   items = items.filter(item => {
     const matchesStatus = (filterStatus === 'Все') || (item.status === filterStatus);
     const matchesSearch = item.titleRu.toLowerCase().includes(searchQuery) || 
@@ -95,9 +86,7 @@ async function loadAnimeData() {
     return matchesStatus && matchesSearch;
   });
 
-  // Сортировка: сначала новые или по ID по убыванию
   items.reverse();
-
   renderList(items);
 }
 
@@ -112,10 +101,7 @@ function renderList(items) {
   items.forEach(item => {
     const card = document.createElement('div');
     card.className = "bg-zinc-950 border border-zinc-800 rounded-lg p-4 flex gap-4 items-start hover:border-zinc-700 transition";
-    
-    // Заглушка, если нет постера
     const posterSrc = item.posterUrl || 'https://placehold.co';
-
     const isWatching = item.status === 'Смотрю';
 
     card.innerHTML = `
@@ -157,7 +143,6 @@ function renderList(items) {
   });
 }
 
-// Функции изменения по кнопкам на карточке
 async function changeEpisode(id, delta) {
   const item = await db.anime.get(id);
   if (item) {
@@ -179,7 +164,6 @@ async function deleteAnime(id) {
   }
 }
 
-// Автопоиск постеров по API Shikimori
 async function fetchPosterUrl(title) {
   try {
     const url = `https://shikimori.one{encodeURIComponent(title)}&limit=1`;
@@ -196,7 +180,7 @@ async function fetchPosterUrl(title) {
   return '';
 }
 
-// Управление Модальным Окном
+/* Модальное окно */
 function openModal(item = null) {
   animeModal.classList.remove('hidden');
   if (item) {
@@ -251,25 +235,27 @@ async function handleFormSubmit(e) {
   }
 
   closeModal();
-loadAnimeData();
+  loadAnimeData();
 }
+
 async function editAnime(id) {
-const item = await db.anime.get(id);
-if (item) openModal(item);
+  const item = await db.anime.get(id);
+  if (item) openModal(item);
 }
-// Импорт CSV с автоопределением структуры
+
+/* Работа с CSV */
 function handleCSVImport(e) {
-const file = e.target.files[0];
-if (!file) return;
-const reader = new FileReader();
-reader.onload = async function(evt) {
-const text = evt.target.result;
-const lines = text.split(/\r?\n/);
-if (lines.length < 2) return;
-// Автоопределение разделителя (запятая или точка с запятой)
-const firstLine = lines[0];
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async function(evt) {
+    const text = evt.target.result;
+    const lines = text.split(/\r?\n/);
+    if (lines.length < 2) return;
+
+    const firstLine = lines[0];
 const delimiter = firstLine.includes(';') ? ';' : ',';
-// Функция парсинга CSV-строки с учетом кавычек
 function parseCSVLine(line) {
 const result = [];
 let current = '';
@@ -289,7 +275,6 @@ result.push(current.trim().replace(/^"|"$/g, ''));
 return result;
 }
 const headers = parseCSVLine(lines[0]);
-// Индексы колонок по вашему скриншоту
 const idxRu = headers.findIndex(h => h.toLowerCase().includes('русское'));
 const idxOrig = headers.findIndex(h => h.toLowerCase().includes('оригинальное'));
 const idxAlt = headers.findIndex(h => h.toLowerCase().includes('альтернативные'));
@@ -302,17 +287,14 @@ const row = parseCSVLine(lines[i]);
 if (idxRu !== -1 && row[idxRu]) {
 const titleRu = row[idxRu];
 const statusValue = idxStatus !== -1 ? row[idxStatus] : 'В планах';
-// Чтение признака Избранное
 let isFav = 0;
 if (idxFav !== -1 && row[idxFav]) {
 const favText = row[idxFav].toLowerCase();
 if (favText.includes('добавлено') && !favText.includes('не')) isFav = 1;
 if (favText === '1' || favText === 'yes' || favText === 'true') isFav = 1;
 }
-// Поиск дубликата в текущей базе по названию
 const exists = await db.anime.where('titleRu').equals(titleRu).first();
 if (!exists) {
-// Отправляем в базу. Постер подгрузится автоматически или при рендере
 const poster = await fetchPosterUrl(titleRu);
 await db.anime.add({
 titleRu,
@@ -328,16 +310,15 @@ importedCount++;
 }
 }
 }
-alert(Импорт завершен! Успешно добавлено новых записей: ${importedCount});
+alert(Импорт завершен! Добавлено записей: ${importedCount});
 loadAnimeData();
 };
 reader.readAsText(file, 'UTF-8');
 }
-// Экспорт базы обратно в CSV
 async function handleCSVExport() {
 const items = await db.anime.toArray();
 if (items.length === 0) {
-alert('База пуста, нечего экспортировать.');
+alert('База пуста.');
 return;
 }
 const headers = ['№', 'Русское название', 'Оригинальное название', 'Альтернативные названия', 'Добавлено в избранное', 'Статус просмотра'];
