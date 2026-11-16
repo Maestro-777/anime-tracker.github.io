@@ -150,9 +150,10 @@ Deno.serve(async(request:Request)=>{
   try {
     const body=await request.json();const action=String(body?.action||"");
     if(action==="diagnostics") {
-      const q=JSON.stringify({query:"query { Media(id: 1, type: ANIME) { id title { romaji } } }"});
+      const q=JSON.stringify({query:'query { Media(search: "Naruto", type: ANIME) { id title { romaji } } }'});
       const results=await Promise.all([
-        probeProvider("AniList","https://graphql.anilist.co",{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json","User-Agent":USER_AGENT},body:q}),
+        probeProvider("AniList (без слэша)","https://graphql.anilist.co",{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json","User-Agent":USER_AGENT},body:q}),
+        probeProvider("AniList (со слэшем)","https://graphql.anilist.co/",{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json","User-Agent":USER_AGENT},body:q}),
         probeProvider("Shikimori",`${SHIKIMORI_API}/animes?search=naruto&limit=1`,{headers:{"Accept":"application/json","User-Agent":USER_AGENT}}),
         probeProvider("Kitsu",`${KITSU_API}/anime?filter%5Btext%5D=naruto&page%5Blimit%5D=1`,{headers:{"Accept":"application/vnd.api+json","User-Agent":USER_AGENT}})
       ]);
