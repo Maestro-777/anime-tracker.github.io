@@ -33,11 +33,11 @@ create policy "AnimeVault users can insert own records"
 create policy "AnimeVault users can update own records"
   on public.animevault_records for update
   to authenticated
-  using (auth.uid() = owner_id)
+  using ((select auth.uid()) = owner_id)
   with check ((select auth.uid()) = owner_id);
 
+revoke all privileges on public.animevault_records from anon, authenticated;
 grant select, insert, update on public.animevault_records to authenticated;
-revoke all on public.animevault_records from anon;
 
 
 -- AnimeVault poster storage. Bucket is public for stable image URLs;
