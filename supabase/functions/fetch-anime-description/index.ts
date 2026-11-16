@@ -38,13 +38,27 @@ function titleSimilarity(a: string,b: string) {
   const overlap=[...aa].filter(x=>bb.has(x)).length;
   return overlap/Math.max(1,new Set([...aa,...bb]).size);
 }
+function retryAfterSeconds(response: Response, fallback=900) {
+  const value=response.headers.get("Retry-After");
+  if(!value) return fallback;
+  const seconds=Number(value);
+  const parsed=Number.isFinite(seconds)?seconds:Math.ceil((Date.parse(value)-Date.now())/1000);
+  return Math.max(60,Math.min(21600,Number.isFinite(parsed)&&parsed>0?parsed:fallback));
+}
+let translationCooldownUntil=0;
+function rateLimitError(message: string, seconds=900) {
+  const error=new Error(message);
+  (error as any).status=429;
+  (error as any).retryAfterSeconds=seconds;
+  return error;
+}
 async function findShikimoriDescription(title: string, malId: number | null) {
   if(!title) return "";
   const url=new URL("https://shikimori.one/api/animes");
   url.searchParams.set("search",title);
   url.searchParams.set("limit","10");
   const response=await fetch(url,{headers:{"Accept":"application/json","User-Agent":USER_AGENT},signal:AbortSignal.timeout(12000)});
-  if(response.status===429) throw new Error("Shikimori ограничил частоту запросов. Повторите позже.");
+  if(response.status===429) throw rateLimitError("Shikimori ограничил частоту запросов. Повторите позже.",retryAfterSeconds(response));
   if(!response.ok) throw new Error(`Shikimori HTTP ${response.status}`);
   const rows=await response.json();
   if(!Array.isArray(rows)) return "";
@@ -71,6 +85,11 @@ async function translateToRussian(source: string) {
   url.searchParams.set("dt","t");
   url.searchParams.set("q",text);
   const response=await fetch(url,{headers:{"User-Agent":USER_AGENT},signal:AbortSignal.timeout(15000)});
+  if(response.status===429) {
+    const seconds=retryAfterSeconds(response);
+    translationCooldownUntil=Date.now()+seconds*1000;
+    throw rateLimitError("Сервис перевода временно ограничил частоту запросов.",seconds);
+  }
   if(!response.ok) throw new Error(`Сервис перевода HTTP ${response.status}`);
   const data=await response.json();
   const translated=Array.isArray(data?.[0])?data[0].map((part:any)=>String(part?.[0]||"")).join("").trim():"";
@@ -102,11 +121,18 @@ Deno.serve(async (request: Request) => {
       if(shikimoriFailed) throw new Error(`Shikimori не ответил (${shikimoriError}), а исходного описания для перевода нет.`);
       return json({descriptionRu:"",source:"not_found"},200,cors);
     }
+    if(translationCooldownUntil>Date.now()) throw rateLimitError("Перевод временно приостановлен после ограничения сервиса.",Math.ceil((translationCooldownUntil-Date.now())/1000));
     const descriptionRu=await translateToRussian(textToTranslate);
     return json({descriptionRu,source:shikimoriDescription?"translated_shikimori":"google_translate"},200,cors);
   } catch(error) {
     const message=error instanceof Error?error.message:"Unexpected description lookup error";
     console.error("AnimeVault description lookup failed:",message);
+    const status=Number((error as any)?.status)===429?429:503;
+    if(status===429) {
+      const seconds=Math.max(60,Math.min(21600,Number((error as any)?.retryAfterSeconds)||900));
+      translationCooldownUntil=Math.max(translationCooldownUntil,Date.now()+seconds*1000);
+      return json({error:message,retryAfterSeconds:seconds},429,{...cors,"Retry-After":String(seconds)});
+    }
     return json({error:message},503,cors);
   }
 });
