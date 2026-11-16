@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v133-cloud-google1';
+const CACHE_NAME = 'animevault-shell-v134-cloud-posters';
 const APP_SHELL = [
   './',
   './index.html',

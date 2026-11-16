@@ -168,7 +168,7 @@ function renderList(items, append = false) {
 function createAnimeCard(item) {
   const card = document.createElement('article');
   card.className = `anime-card${viewMode === 'list' ? ' list-card' : ''}`;
-  const poster = safeURL(item.posterUrl) || 'icon-512.png';
+  const poster = safeURL(item.posterCloudUrl) || safeURL(item.posterUrl) || safeURL(item.apiPosterUrl) || 'icon-512.png';
   const watch = safeURL(item.watchLink);
   const title = escapeHTML(item.titleRu || 'Без названия');
   const original = escapeHTML(item.titleOrig || '—');
@@ -841,6 +841,7 @@ function setupInstallPrompt() {
 /* Supabase cloud sync — IndexedDB remains the offline-first local source. */
 const SUPABASE_URL = 'https://ytmnsnvxjhpejidcndyw.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_qDspg8-HRV2VeewVPVKK8w_uZ8sJhpR';
+const POSTER_BUCKET = 'animevault-posters';
 const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
 });
@@ -904,6 +905,42 @@ async function ensureLocalCloudIds() {
     else if(!row.syncUpdatedAt) await db.anime.update(row.id,{syncUpdatedAt:new Date().toISOString()});
   }
 }
+async function uploadPosterToCloud(item) {
+  if (!(item?.posterUrl || item?.apiPosterUrl) || item.posterCloudUrl || !item.recordUuid) return {status:'skip'};
+  const sourceUrl=safeURL(item.posterUrl || item.apiPosterUrl);
+  if(!sourceUrl) return {status:'skip'};
+  try {
+    const response=await fetch(sourceUrl,{mode:'cors',credentials:'omit',cache:'force-cache'});
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob=await response.blob();
+    const type=(blob.type||'').toLowerCase();
+    if(!type.startsWith('image/')) throw new Error('Источник вернул не изображение');
+    if(blob.size>10*1024*1024) throw new Error('Изображение больше 10 МБ');
+    const ext=type.includes('png')?'png':type.includes('webp')?'webp':type.includes('gif')?'gif':type.includes('avif')?'avif':'jpg';
+    const path=`${cloudUser.id}/${item.recordUuid}.${ext}`;
+    const {error}=await supabaseClient.storage.from(POSTER_BUCKET).upload(path,blob,{contentType:type,cacheControl:'31536000',upsert:true});
+    if(error) throw error;
+    const {data}=supabaseClient.storage.from(POSTER_BUCKET).getPublicUrl(path);
+    if(!data?.publicUrl) throw new Error('Не удалось получить публичную ссылку');
+    await db.anime.update(item.id,{posterStoragePath:path,posterCloudUrl:data.publicUrl});
+    return {status:'uploaded'};
+  } catch(error) {
+    console.warn('AnimeVault poster upload skipped:',item.titleRu,error?.message||error);
+    return {status:'failed',message:error?.message||'Ошибка загрузки'};
+  }
+}
+async function uploadLibraryPosters(items) {
+  const queue=items.filter(item=>(item.posterUrl || item.apiPosterUrl) && !item.posterCloudUrl && item.recordUuid);
+  let uploaded=0,failed=0,done=0;
+  for(let i=0;i<queue.length;i+=3) {
+    const results=await Promise.all(queue.slice(i,i+3).map(uploadPosterToCloud));
+    for(const result of results) { if(result.status==='uploaded') uploaded++; else if(result.status==='failed') failed++; }
+    done+=results.length;
+    if(done%30===0 || done===queue.length) cloudStatus(`Постеры: обработано ${done} из ${queue.length}, загружено ${uploaded}${failed?`, ошибок ${failed}`:''}.`);
+  }
+  return {uploaded,failed,total:queue.length};
+}
+
 async function syncCloudNow() {
   if(!supabaseClient || !cloudUser || syncBusy || !navigator.onLine) {
     if(!navigator.onLine) cloudStatus('Нет подключения к интернету. Локальная библиотека доступна.','error');
@@ -960,6 +997,8 @@ async function syncCloudNow() {
         } finally { applyingCloudData=false; }
       }
     }
+    cloudStatus('Записи синхронизированы. Проверяем постеры и загружаем их в облако…');
+    const posterResult=await uploadLibraryPosters(await db.anime.toArray());
     const refresh=await db.anime.toArray();
     const upserts=[];
     for(const item of refresh) {
@@ -974,7 +1013,7 @@ async function syncCloudNow() {
       const {error}=await supabaseClient.from('animevault_records').upsert(upserts.slice(i,i+100),{onConflict:'owner_id,record_id'});
       if(error) throw error; pushed+=Math.min(100,upserts.length-i);
     }
-    cloudStatus(`Синхронизировано. Получено: ${pulled}, отправлено: ${pushed}.`,'success');
+    cloudStatus(`Синхронизировано. Получено: ${pulled}, отправлено: ${pushed}. Постеры: +${posterResult.uploaded}${posterResult.failed?`, не удалось: ${posterResult.failed}`:''}.`,'success');
     $('cloud-last-sync').textContent=`Последняя синхронизация: ${new Date().toLocaleString('ru-RU')}`;
     await loadAnimeData();
   } catch(err) {
@@ -1075,6 +1114,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.3.3 · Cloud';
+  $('app-version').textContent='v1.3.4 · Cloud Posters';
 }
 document.addEventListener('DOMContentLoaded',init);

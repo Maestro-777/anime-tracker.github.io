@@ -38,3 +38,51 @@ create policy "AnimeVault users can update own records"
 
 grant select, insert, update on public.animevault_records to authenticated;
 revoke all on public.animevault_records from anon;
+
+
+-- AnimeVault poster storage. Bucket is public for stable image URLs;
+-- uploads/replacements/deletes are restricted to the authenticated owner's folder.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'animevault-posters',
+  'animevault-posters',
+  true,
+  10485760,
+  array['image/jpeg','image/png','image/webp','image/gif','image/avif']
+)
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "AnimeVault users can upload own posters" on storage.objects;
+drop policy if exists "AnimeVault users can update own posters" on storage.objects;
+drop policy if exists "AnimeVault users can delete own posters" on storage.objects;
+
+create policy "AnimeVault users can upload own posters"
+  on storage.objects for insert
+  to authenticated
+  with check (
+    bucket_id = 'animevault-posters'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  );
+
+create policy "AnimeVault users can update own posters"
+  on storage.objects for update
+  to authenticated
+  using (
+    bucket_id = 'animevault-posters'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  )
+  with check (
+    bucket_id = 'animevault-posters'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  );
+
+create policy "AnimeVault users can delete own posters"
+  on storage.objects for delete
+  to authenticated
+  using (
+    bucket_id = 'animevault-posters'
+    and (storage.foldername(name))[1] = (select auth.uid())::text
+  );
