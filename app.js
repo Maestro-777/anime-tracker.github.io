@@ -876,6 +876,22 @@ async function cloudSignIn(event) {
   } catch(err) { cloudStatus(err.message || 'Не удалось войти.','error'); }
   finally { $('cloud-submit').disabled=false; }
 }
+async function cloudGitHubSignIn() {
+  if(!supabaseClient) return cloudStatus('Не загрузилась библиотека Supabase. Проверьте интернет и обновите страницу.','error');
+  const button=$('cloud-github-login');
+  button.disabled=true;
+  try {
+    const redirectTo=window.location.origin + window.location.pathname;
+    const {error}=await supabaseClient.auth.signInWithOAuth({
+      provider:'github',
+      options:{redirectTo}
+    });
+    if(error) throw error;
+  } catch(err) {
+    cloudStatus(err.message || 'Не удалось начать вход через GitHub. Проверьте настройки GitHub Provider в Supabase.','error');
+    button.disabled=false;
+  }
+}
 async function cloudSignOut() {
   if(!supabaseClient) return;
   try { await supabaseClient.auth.signOut(); setCloudSignedIn(null); cloudStatus('Вы вышли. Локальная библиотека сохранена.','success'); }
@@ -970,6 +986,7 @@ async function syncCloudNow() {
 async function initCloudAuth() {
   if(!supabaseClient) { cloudStatus('Не удалось загрузить Supabase SDK.','error'); return; }
   $('cloud-auth-form').addEventListener('submit',cloudSignIn);
+  $('cloud-github-login').addEventListener('click',cloudGitHubSignIn);
   $('cloud-auth-mode').addEventListener('change',e=>{$('cloud-submit').textContent=e.target.value==='signup'?'Создать аккаунт':'Войти';});
   $('cloud-signout').addEventListener('click',cloudSignOut);
   $('cloud-sync-now').addEventListener('click',syncCloudNow);

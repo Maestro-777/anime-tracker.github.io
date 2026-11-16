@@ -2,8 +2,15 @@ AnimeVault v1.3.3 — подключение облачной синхрониз
 
 1. Откройте Supabase Dashboard -> SQL Editor -> New query.
 2. Скопируйте весь файл SUPABASE_SETUP.sql, вставьте и нажмите Run.
-3. В Authentication -> Providers -> Email включите Email provider.
-4. При желании для первого теста можно отключить Confirm email в Authentication -> Settings -> Email Auth. Если подтверждение включено, после регистрации откройте письмо и подтвердите адрес.
+3. В Authentication -> Providers -> Email включите Email provider (для входа по email/паролю).
+4. Чтобы работала кнопка «Войти через GitHub», настройте GitHub Provider. Вход в сам Supabase Dashboard через GitHub НЕ включает вход через GitHub в AnimeVault — это отдельная настройка Supabase Auth.
+   - Откройте GitHub -> Settings -> Developer settings -> OAuth Apps -> New OAuth App.
+   - Homepage URL: адрес опубликованного AnimeVault (например, https://maestro-777.github.io/anime-tracker.github.io/).
+   - Authorization callback URL укажите точно: https://ytmnsnvxjhpejidcndyw.supabase.co/auth/v1/callback
+   - Создайте приложение, скопируйте Client ID и сгенерируйте Client Secret.
+   - В Supabase -> Authentication -> Providers -> GitHub включите провайдер и вставьте Client ID и Client Secret.
+   - Сохраните настройки. Client Secret не добавляйте в файлы PWA и никому не отправляйте.
+
 5. В Authentication -> URL Configuration укажите Site URL — фактический HTTPS-адрес AnimeVault. Добавьте этот же адрес в Redirect URLs. Для локального теста добавьте http://localhost:8000/**.
 6. Разместите файлы приложения на HTTPS-хостинге (или запустите start.bat на ПК для localhost).
 7. Откройте AnimeVault -> Облако -> Создать аккаунт. Используйте один и тот же аккаунт на ПК и телефоне.

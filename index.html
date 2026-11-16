@@ -333,7 +333,9 @@
       <div class="chart-panel" style="max-width:620px">
         <form id="cloud-auth-form">
           <h3>Аккаунт AnimeVault</h3>
-          <p style="color:#a1a1aa;font-size:12px">Используйте email и пароль. Это отдельный аккаунт приложения Supabase Auth, не вход в панель Supabase.</p>
+          <p style="color:#a1a1aa;font-size:12px">Войдите через GitHub или используйте email и пароль. Это аккаунт приложения AnimeVault, не вход в панель Supabase.</p>
+          <button id="cloud-github-login" class="btn" type="button" style="margin-top:14px;width:100%;display:flex;align-items:center;justify-content:center;gap:10px;background:#fff;color:#202124;border:1px solid #dadce0;font-weight:700"><span aria-hidden="true" style="font-size:18px;font-weight:800;color:#24292f">GH</span>Войти через GitHub</button>
+          <div style="display:flex;align-items:center;gap:12px;margin:15px 0;color:#71717a;font-size:11px"><span style="height:1px;background:#303036;flex:1"></span>ИЛИ EMAIL И ПАРОЛЬ<span style="height:1px;background:#303036;flex:1"></span></div>
           <label class="field" style="display:block;margin:12px 0 5px;color:#a1a1aa;font-size:12px">Действие</label>
           <select id="cloud-auth-mode" class="filter" style="width:100%;max-width:none"><option value="signin">Войти</option><option value="signup">Создать аккаунт</option></select>
           <label class="field" style="display:block;margin:12px 0 5px;color:#a1a1aa;font-size:12px">Email</label><input id="cloud-email" class="search" style="width:100%;padding-left:13px" type="email" autocomplete="email" required placeholder="you@example.com">
