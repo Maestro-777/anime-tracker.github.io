@@ -471,13 +471,14 @@ async function enrichLibrary() {
       if(enrichmentCancel) break;
       if(!navigator.onLine){addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.','error');break;}
       const batch=queue.slice(i,i+3);
-      const needAni=batch.filter(x=>!x.anilistId);
+      const needAni=batch.filter(x=>!x.anilistId&&!x.metadataUpdatedAt&&x.metadataLookupStatus!=='not_found');
       const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean).slice(0,3)))];
       let metadataMap=new Map(),metadataBatchError=null;
       if(titles.length) {
         try { metadataMap=await fetchAnimeMetadataBatch(titles.slice(0,9)); }
         catch(err) { metadataBatchError=err; console.warn('AniList batch failed:',err); }
       }
+      if(metadataBatchError?.retryAfter) await new Promise(resolve=>setTimeout(resolve,metadataBatchError.retryAfter));
       for(const item of batch) {
         if(enrichmentCancel) break;
         let result;
