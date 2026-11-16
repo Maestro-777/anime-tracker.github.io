@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v140-multi-provider-api';
+const CACHE_NAME = 'animevault-shell-v141-multi-provider-api';
 const APP_SHELL = [
   './',
   './index.html',
