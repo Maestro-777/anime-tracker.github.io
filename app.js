@@ -174,7 +174,9 @@ function renderList(items, append = false) {
 function createAnimeCard(item) {
   const card = document.createElement('article');
   card.className = `anime-card${viewMode === 'list' ? ' list-card' : ''}`;
-  const poster = safeURL(item.posterCloudUrl) || safeURL(item.posterUrl) || safeURL(item.apiPosterUrl) || 'icon-512.png';
+  const poster = item.posterDriveFileId
+    ? (safeURL(item.posterUrl) || safeURL(item.apiPosterUrl) || 'icon-512.png')
+    : (safeURL(item.posterCloudUrl) || safeURL(item.posterUrl) || safeURL(item.apiPosterUrl) || 'icon-512.png');
   const watch = safeURL(item.watchLink);
   const title = escapeHTML(item.titleRu || 'Без названия');
   const original = escapeHTML(item.titleOrig || '—');
