@@ -457,8 +457,16 @@ async function enrichOne(item, metadataMap=null) {
       if(!meta) { russianOnly=true;meta={}; }
     }
     const checkedAt=new Date().toISOString();
+    const performedLookup=!item.anilistId&&!russianOnly;
     const lookupFound=!!(meta.metadataProvider||meta.anilistId||item.metadataLookupStatus==='found'||item.anilistId);
-    const patch={...meta,metadataUpdatedAt:lookupFound?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:lookupFound?null:new Date(Date.now()+30*24*60*60*1000).toISOString(),metadataLookupStatus:lookupFound?'found':'not_found'};
+    const nextNoMatchRetry=new Date(Date.now()+30*24*60*60*1000).toISOString();
+    const patch={...meta,
+      metadataUpdatedAt:performedLookup?checkedAt:(item.metadataUpdatedAt||''),
+      metadataLookupAttemptedAt:performedLookup?checkedAt:(item.metadataLookupAttemptedAt||''),
+      metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+(performedLookup?1:0),
+      metadataRetryAt:lookupFound?null:(performedLookup?nextNoMatchRetry:(item.metadataRetryAt||nextNoMatchRetry)),
+      metadataLookupStatus:lookupFound?'found':'not_found'
+    };
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
     if(!item.descriptionRu && meta.metadataProvider==='Shikimori' && /[А-Яа-яЁё]/.test(String(meta.description||''))) {
