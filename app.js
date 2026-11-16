@@ -1705,7 +1705,7 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.6.2 · Исправлен поиск серий';
+  $('app-version').textContent='v1.6.3 · Поиск в Яндексе';
 }
 
 let playerAnimeId=null, playerHls=null, playerLastSavedAt=0, playerActiveSource=null;
