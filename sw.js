@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v147-poster-transfer';
+const CACHE_NAME = 'animevault-shell-v148-library-dedupe';
 const APP_SHELL = [
   './',
   './index.html',
