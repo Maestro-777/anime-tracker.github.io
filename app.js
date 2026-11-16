@@ -30,15 +30,24 @@ db.version(8).stores({
 });
 
 let applyingCloudData = false;
-db.anime.hook('creating', (_key, obj) => {
+db.anime.hook('creating', (_key, obj, trans) => {
   if (applyingCloudData) return;
   obj.recordUuid = obj.recordUuid || crypto.randomUUID();
   obj.syncUpdatedAt = new Date().toISOString();
+  trans.table('sync_meta').put({key:`dirty:${obj.recordUuid}`,value:{recordUuid:obj.recordUuid,updatedAt:obj.syncUpdatedAt}});
+  if (obj.posterUrl || obj.apiPosterUrl) trans.table('sync_meta').put({key:`poster:${obj.recordUuid}`,value:{recordUuid:obj.recordUuid}});
 });
-db.anime.hook('updating', (mods, _key, obj) => {
+db.anime.hook('updating', (mods, _key, obj, trans) => {
   if (applyingCloudData) return mods;
   const nextTime=Math.max(Date.now(),Date.parse(obj?.syncUpdatedAt||0)+1);
-  return {...mods, syncUpdatedAt: new Date(nextTime).toISOString()};
+  const updatedAt=new Date(nextTime).toISOString();
+  const uuid=mods.recordUuid||obj?.recordUuid;
+  if(uuid) {
+    trans.table('sync_meta').put({key:`dirty:${uuid}`,value:{recordUuid:uuid,updatedAt}});
+    if(Object.prototype.hasOwnProperty.call(mods,'posterUrl')||Object.prototype.hasOwnProperty.call(mods,'apiPosterUrl'))
+      trans.table('sync_meta').put({key:`poster:${uuid}`,value:{recordUuid:uuid}});
+  }
+  return {...mods, syncUpdatedAt:updatedAt};
 });
 db.anime.hook('deleting', (key, obj, tx) => {
   if (applyingCloudData || obj?._remoteDelete || !obj?.recordUuid) return;
@@ -124,7 +133,7 @@ async function loadAnimeData() {
     items = items.filter(item => {
       const statusOK = filterStatus === 'Все' || normalizeStatus(item.status) === filterStatus;
       const query = norm(searchQuery);
-      const haystack = norm([item.titleRu, item.titleOrig, item.titleAlt, item.description, ...(item.genres||[])].join(' '));
+      const haystack = norm([item.titleRu, item.titleOrig, item.titleAlt, item.descriptionRu, item.description, ...(item.genres||[])].join(' '));
       const genreOK = filterGenre === 'Все' || (item.genres||[]).includes(filterGenre);
       const formatOK = filterFormat === 'Все' || item.format === filterFormat;
       const yearOK = filterYear === 'Все' || String(item.year||'') === filterYear;
@@ -181,7 +190,7 @@ function createAnimeCard(item) {
   const title = escapeHTML(item.titleRu || 'Без названия');
   const original = escapeHTML(item.titleOrig || '—');
   const alt = escapeHTML(item.titleAlt || '');
-  const description = escapeHTML(item.description || '');
+  const description = escapeHTML(item.descriptionRu || item.description || '');
   const status = normalizeStatus(item.status);
   card.innerHTML = `
       <div class="poster-wrap">
@@ -298,19 +307,43 @@ function updatePosterPreview() {
   els.posterPreview.src = url || 'icon-512.png';
 }
 const ANILIST_ENDPOINT = 'https://graphql.anilist.co';
-async function fetchAnimeMetadata(title) {
-  const query = `query ($search: String) { Media(search: $search, type: ANIME) { id idMal title { romaji english native } description(asHtml: false) episodes duration format seasonYear averageScore genres coverImage { extraLarge large medium } } }`;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 25000);
+const ANILIST_FIELDS = 'id idMal title { romaji english native } description(asHtml: false) episodes duration format seasonYear averageScore genres coverImage { extraLarge large medium }';
+async function fetchAnimeMetadataBatch(titles) {
+  const unique=[...new Set((titles||[]).map(x=>String(x||'').trim()).filter(Boolean))].slice(0,10);
+  const result=new Map(); if(!unique.length) return result;
+  const variables={}, declarations=[], fields=[];
+  unique.forEach((title,i)=>{variables[`s${i}`]=title;declarations.push(`$s${i}: String`);fields.push(`m${i}: Media(search:$s${i},type:ANIME){${ANILIST_FIELDS}}`);});
+  const query=`query (${declarations.join(',')}){${fields.join(' ')}}`;
+  const controller=new AbortController(),timeoutId=setTimeout(()=>controller.abort(),25000);
   let response;
-  try { response = await fetch(ANILIST_ENDPOINT, {method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json'}, body:JSON.stringify({query,variables:{search:title.trim()}}), signal:controller.signal}); }
-  finally { clearTimeout(timeoutId); }
-  if (!response.ok) { const reset=Number(response.headers.get('X-RateLimit-Reset')||0); const wait=reset>0?Math.max(1000,reset*1000-Date.now()+1500):60000; const error=new Error(`AniList HTTP ${response.status}`); error.retryAfter=wait; throw error; }
-  const json = await response.json();
-  const m = json?.data?.Media;
-  if (!m?.id) return null;
-  const clean = value => String(value || '').replace(/<br\s*\/?\s*>/gi,' ').replace(/<[^>]*>/g,'').replace(/&amp;/g,'&').replace(/&#039;/g,"'").replace(/&quot;/g,'"').trim();
-  return {anilistId:m.id, malId:m.idMal || null, titleApi:m.title?.english || m.title?.romaji || m.title?.native || '', description:clean(m.description).slice(0,2500), totalEpisodes:m.episodes || null, episodeDuration:m.duration || null, format:m.format || '', year:m.seasonYear || null, score:m.averageScore || null, genres:Array.isArray(m.genres)?m.genres:[], apiPosterUrl:m.coverImage?.extraLarge || m.coverImage?.large || m.coverImage?.medium || ''};
+  try {
+    response=await fetch(ANILIST_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({query,variables}),signal:controller.signal});
+  } finally { clearTimeout(timeoutId); }
+  if(!response.ok){const reset=Number(response.headers.get('X-RateLimit-Reset')||0);const wait=reset>0?Math.max(1000,reset*1000-Date.now()+1500):Math.min(60000,1000*2**Math.max(0,response.status-500));const error=new Error(`AniList HTTP ${response.status}`);error.retryAfter=wait;error.status=response.status;throw error;}
+  const json=await response.json();
+  if(json?.errors?.length) throw new Error(String(json.errors[0]?.message||'AniList GraphQL error'));
+  const clean=value=>String(value||'').replace(/<br\s*\/?\s*>/gi,' ').replace(/<[^>]*>/g,'').replace(/&amp;/g,'&').replace(/&#039;/g,"'").replace(/&quot;/g,'"').trim();
+  unique.forEach((title,i)=>{
+    const m=json?.data?.[`m${i}`]; if(!m?.id) return;
+    result.set(title,{anilistId:m.id,malId:m.idMal||null,titleApi:m.title?.english||m.title?.romaji||m.title?.native||'',description:clean(m.description).slice(0,2500),totalEpisodes:m.episodes||null,episodeDuration:m.duration||null,format:m.format||'',year:m.seasonYear||null,score:m.averageScore||null,genres:Array.isArray(m.genres)?m.genres:[],apiPosterUrl:m.coverImage?.extraLarge||m.coverImage?.large||m.coverImage?.medium||''});
+  });
+  return result;
+}
+async function fetchAnimeMetadata(title) {
+  const result=await fetchAnimeMetadataBatch([title]);
+  return result.get(String(title||'').trim())||null;
+}
+async function fetchRussianDescription(item) {
+  if(!supabaseClient) throw new Error('Supabase SDK недоступен для получения русского описания.');
+  const {data:{session}}=await supabaseClient.auth.getSession();
+  if(!session?.access_token) throw new Error('Для получения русского описания войдите в AnimeVault.');
+  const response=await fetch(`${SUPABASE_URL}/functions/v1/fetch-anime-description`,{
+    method:'POST',
+    headers:{'Authorization':`Bearer ${session.access_token}`,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
+    body:JSON.stringify({title:item.titleRu||item.titleOrig||item.titleApi||'',malId:item.malId||null,description:item.description||''})
+  });
+  if(!response.ok){const detail=await response.text().catch(()=>'');throw new Error(`Русское описание HTTP ${response.status}: ${detail.slice(0,180)}`);}
+  return response.json();
 }
 async function fetchPosterUrl(title) {
   if (!title.trim()) return '';
@@ -359,24 +392,42 @@ function setEnrichmentSummary(text) {
   const detail = $('enrich-progress-detail');
   if (detail) detail.textContent = text;
 }
-async function enrichOne(item) {
+async function enrichOne(item, metadataMap=null) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i);
-  if (!candidates.length) return 'no_title';
+  if (!candidates.length && !item.anilistId) return 'no_title';
   try {
-    let meta=null;
-    for (const title of candidates) { meta=await fetchAnimeMetadata(title); if(meta) break; }
-    if (!meta) {
-      await db.anime.update(item.id, {metadataLookupAttemptedAt:new Date().toISOString(), metadataLookupStatus:'not_found'});
-      return 'miss';
+    let meta=item.anilistId?{}:null;
+    if(!item.anilistId) {
+      if(metadataMap) meta=candidates.map(title=>metadataMap.get(title)).find(Boolean)||null;
+      else {const found=await fetchAnimeMetadataBatch(candidates);meta=candidates.map(title=>found.get(title)).find(Boolean)||null;}
+      if(!meta) {
+        await db.anime.update(item.id,{metadataLookupAttemptedAt:new Date().toISOString(),metadataLookupStatus:'not_found'});
+        return 'miss';
+      }
     }
-    const patch = {...meta, metadataUpdatedAt:new Date().toISOString(), metadataLookupAttemptedAt:new Date().toISOString(), metadataLookupStatus:'found'};
-    if (!item.posterUrl && meta.apiPosterUrl) patch.posterUrl = meta.apiPosterUrl;
-    await db.anime.update(item.id, patch);
+    const patch={...meta,metadataUpdatedAt:meta.anilistId?new Date().toISOString():(item.metadataUpdatedAt||new Date().toISOString()),metadataLookupAttemptedAt:new Date().toISOString(),metadataLookupStatus:'found'};
+    if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
+    const merged={...item,...patch};
+    if(!item.descriptionRu || item.descriptionRuStatus==='error') {
+      try {
+        const ru=await fetchRussianDescription(merged);
+        if(ru?.descriptionRu) {
+          patch.descriptionRu=String(ru.descriptionRu).slice(0,4000);
+          patch.descriptionRuSource=ru.source||'shikimori';
+          patch.descriptionRuStatus='found';
+          patch.descriptionRuUpdatedAt=new Date().toISOString();
+        } else patch.descriptionRuStatus='not_found';
+      } catch(err) {
+        patch.descriptionRuStatus='error';
+        patch.descriptionRuError=String(err?.message||err).slice(0,180);
+      }
+    }
+    await db.anime.update(item.id,patch);
     return 'ok';
-  } catch (err) {
-    console.warn('Metadata lookup failed:', item.titleRu, err);
+  } catch(err) {
+    console.warn('Metadata lookup failed:',item.titleRu,err);
     if(err.retryAfter) await new Promise(r=>setTimeout(r,err.retryAfter));
-    await db.anime.update(item.id, {metadataLookupStatus:'error', metadataLookupError:String(err?.message || err).slice(0,180)}).catch(()=>{});
+    await db.anime.update(item.id,{metadataLookupStatus:'error',metadataLookupError:String(err?.message||err).slice(0,180)}).catch(()=>{});
     return 'error';
   }
 }
@@ -390,8 +441,10 @@ async function enrichLibrary() {
   enrichmentRunning = true; enrichmentCancel = false;
   const all = await db.anime.toArray();
   // Found entries and completed lookups (including "not found") are never searched again.
-  const queue = all.filter(x => !x.anilistId && !x.metadataLookupAttemptedAt && !x.metadataUpdatedAt &&
-    [x.titleOrig, x.titleRu, x.titleAlt].some(v => String(v || '').trim()));
+  const queue = all.filter(x =>
+    (!x.anilistId && !x.metadataLookupAttemptedAt && !x.metadataUpdatedAt && [x.titleOrig,x.titleRu,x.titleAlt].some(v=>String(v||'').trim())) ||
+    (x.anilistId && !x.descriptionRu && x.descriptionRuStatus!=='not_found')
+  );
   let done=0, found=0, missed=0, errors=0;
   const button = $('btn-enrich-start');
   const stopButton = $('btn-stop-enrich');
@@ -408,28 +461,34 @@ async function enrichLibrary() {
     setEnrichmentSummary('Всё уже проверено — новых запросов не требуется.');
   }
   try {
-    for (let i=0; i<queue.length; i+=1) {
-      if (enrichmentCancel) break;
-      if (!navigator.onLine) {
-        addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.', 'error');
-        break;
+    for (let i=0; i<queue.length; i+=5) {
+      if(enrichmentCancel) break;
+      if(!navigator.onLine){addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.','error');break;}
+      const batch=queue.slice(i,i+5);
+      const needAni=batch.filter(x=>!x.anilistId);
+      const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean)))];
+      let metadataMap=new Map();
+      if(titles.length) {
+        try { metadataMap=await fetchAnimeMetadataBatch(titles.slice(0,10)); }
+        catch(err) { console.warn('AniList batch failed:',err); }
       }
-      const item = queue[i];
-      const result = await enrichOne(item);
-      done += 1;
-      if (result==='ok') { found += 1; addEnrichmentLog(`✓ Найдено: ${item.titleRu || item.titleOrig}`, 'success'); }
-      else if (result==='miss') { missed += 1; addEnrichmentLog(`— Не найдено: ${item.titleRu || item.titleOrig}. Повторно искать не будем.`, 'muted'); }
-      else if (result==='no_title') { missed += 1; addEnrichmentLog(`Пропуск записи без названия (ID ${item.id}).`, 'muted'); }
-      else { errors += 1; const failed=await db.anime.get(item.id); addEnrichmentLog(`Ошибка: ${item.titleRu || item.titleOrig} — ${failed?.metadataLookupError || 'временная ошибка сети/API'}. Попытку можно повторить позже.`, 'error'); }
-      $('enrich-done').textContent = done.toLocaleString('ru-RU');
-      $('enrich-found').textContent = found.toLocaleString('ru-RU');
-      $('enrich-missed').textContent = missed.toLocaleString('ru-RU');
-      $('enrich-errors').textContent = errors.toLocaleString('ru-RU');
-      $('enrich-progress-bar').style.width = `${queue.length ? done/queue.length*100 : 100}%`;
-      setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`);
-      if (done % 10 === 0 || done === queue.length) await loadAnimeData();
-      // Sequential requests are intentionally used for mobile network stability and AniList rate limits.
-      if (i+1 < queue.length && !enrichmentCancel) await new Promise(r=>setTimeout(r,2300));
+      for(const item of batch) {
+        if(enrichmentCancel) break;
+        const result=await enrichOne(item,metadataMap);
+        done++;
+        if(result==='ok'){found++;addEnrichmentLog(`✓ Обработано: ${item.titleRu||item.titleOrig}`,'success');}
+        else if(result==='miss'){missed++;addEnrichmentLog(`— Не найдено в AniList: ${item.titleRu||item.titleOrig}`,'muted');}
+        else if(result==='no_title'){missed++;addEnrichmentLog(`Пропуск записи без названия (ID ${item.id}).`,'muted');}
+        else {errors++;const failed=await db.anime.get(item.id);addEnrichmentLog(`Ошибка: ${item.titleRu||item.titleOrig} — ${failed?.metadataLookupError||failed?.descriptionRuError||'временная ошибка API'}`,'error');}
+        $('enrich-done').textContent=done.toLocaleString('ru-RU');
+        $('enrich-found').textContent=found.toLocaleString('ru-RU');
+        $('enrich-missed').textContent=missed.toLocaleString('ru-RU');
+        $('enrich-errors').textContent=errors.toLocaleString('ru-RU');
+        $('enrich-progress-bar').style.width=`${queue.length?done/queue.length*100:100}%`;
+        setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`);
+      }
+      if(done%10<5||done===queue.length) await loadAnimeData();
+      if(i+5<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,1200));
     }
     await loadAnimeData();
     const status = enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Завершено: найдено ${found}, не найдено ${missed}, ошибок ${errors}`;
@@ -677,7 +736,7 @@ function parseCSV(text) {
     episode: find('текущая серия','серия','episode'),
     link: find('ссылка на просмотр','ссылка','watchlink','watch link'),
     poster: find('ссылка на постер','постер','poster'),
-    anilistId: find('anilist id'), malId:find('mal id'), apiTitle:find('название api'), description: find('описание','description'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
+    anilistId: find('anilist id'), malId:find('mal id'), apiTitle:find('название api'), description: find('описание','description'), descriptionRu:find('русское описание','описание ru','description ru'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
   };
   if (idx.ru < 0) throw new Error('Не найден столбец с русским названием.');
   const result=[];
@@ -705,7 +764,7 @@ function parseCSV(text) {
       currentEpisode: idx.episode >= 0 ? Math.max(0,parseInt(get('episode'),10)||0) : null,
       watchLink: idx.link >= 0 ? safeURL(get('link')) : '',
       posterUrl: idx.poster >= 0 ? safeURL(get('poster')) : '',
-      anilistId: get('anilistId') ? Number(get('anilistId')) : null, malId:get('malId')?Number(get('malId')):null, titleApi:get('apiTitle'), description:get('description'), totalEpisodes:idx.totalEpisodes>=0?(parseInt(get('totalEpisodes'),10)||null):null, episodeDuration:idx.duration>=0?(parseInt(get('duration'),10)||null):null, format:get('format'), year:idx.year>=0?(parseInt(get('year'),10)||null):null, score:idx.score>=0?(parseInt(get('score'),10)||null):null, genres:get('genres')?get('genres').split(/[,|]/).map(x=>x.trim()).filter(Boolean):[], apiPosterUrl:idx.apiPoster>=0?safeURL(get('apiPoster')):'', metadataUpdatedAt:get('metadataUpdated'), metadataLookupAttemptedAt:get('metadataAttempt'), metadataLookupStatus:get('metadataLookupStatus')
+      anilistId: get('anilistId') ? Number(get('anilistId')) : null, malId:get('malId')?Number(get('malId')):null, titleApi:get('apiTitle'), description:get('description'), descriptionRu:get('descriptionRu'), totalEpisodes:idx.totalEpisodes>=0?(parseInt(get('totalEpisodes'),10)||null):null, episodeDuration:idx.duration>=0?(parseInt(get('duration'),10)||null):null, format:get('format'), year:idx.year>=0?(parseInt(get('year'),10)||null):null, score:idx.score>=0?(parseInt(get('score'),10)||null):null, genres:get('genres')?get('genres').split(/[,|]/).map(x=>x.trim()).filter(Boolean):[], apiPosterUrl:idx.apiPoster>=0?safeURL(get('apiPoster')):'', metadataUpdatedAt:get('metadataUpdated'), metadataLookupAttemptedAt:get('metadataAttempt'), metadataLookupStatus:get('metadataLookupStatus')
     });
   }
   return result;
@@ -740,7 +799,7 @@ async function importAnime(items) {
           // Empty import values must never erase manually added poster/link.
           posterUrl: incoming.posterUrl || old.posterUrl || '',
           watchLink: incoming.watchLink || old.watchLink || '',
-          anilistId: incoming.anilistId || old.anilistId || null, malId:incoming.malId || old.malId || null, titleApi:incoming.titleApi || old.titleApi || '', description: incoming.description || old.description || '',
+          anilistId: incoming.anilistId || old.anilistId || null, malId:incoming.malId || old.malId || null, titleApi:incoming.titleApi || old.titleApi || '', description: incoming.description || old.description || '', descriptionRu:incoming.descriptionRu||old.descriptionRu||'',
           totalEpisodes: incoming.totalEpisodes || old.totalEpisodes || null, episodeDuration: incoming.episodeDuration || old.episodeDuration || null,
           format: incoming.format || old.format || '', year: incoming.year || old.year || null, score: incoming.score || old.score || null, genres: incoming.genres || old.genres || [], apiPosterUrl:incoming.apiPosterUrl || old.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || old.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || old.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || old.metadataLookupStatus || ''
         };
@@ -755,7 +814,7 @@ async function importAnime(items) {
           titleRu:incoming.titleRu, titleOrig:incoming.titleOrig, titleAlt:incoming.titleAlt,
           status:incoming.status || 'В планах', favorite:incoming.favorite ? 1 : 0,
           currentEpisode:incoming.currentEpisode || 0, posterUrl:incoming.posterUrl || '',
-          watchLink:incoming.watchLink || '', anilistId:incoming.anilistId || null, malId:incoming.malId || null, titleApi:incoming.titleApi || '', description:incoming.description || '', totalEpisodes:incoming.totalEpisodes || null, episodeDuration:incoming.episodeDuration || null, format:incoming.format || '', year:incoming.year || null, score:incoming.score || null, genres:incoming.genres || [], apiPosterUrl:incoming.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || ''
+          watchLink:incoming.watchLink || '', anilistId:incoming.anilistId || null, malId:incoming.malId || null, titleApi:incoming.titleApi || '', description:incoming.description || '', descriptionRu:incoming.descriptionRu||'', totalEpisodes:incoming.totalEpisodes || null, episodeDuration:incoming.episodeDuration || null, format:incoming.format || '', year:incoming.year || null, score:incoming.score || null, genres:incoming.genres || [], apiPosterUrl:incoming.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || ''
         };
         const id=await db.anime.add(item);
         item.id=id; exact.set(duplicateKey(item),item); byRu.set(norm(item.titleRu),item);
@@ -793,11 +852,11 @@ function csvEscape(value) {
 async function handleCSVExport() {
   const items=await db.anime.toArray();
   if (!items.length) { showToast('Библиотека пуста', 'error'); return; }
-  const headers=['Русское название','Оригинальное название','Альтернативные названия','Добавлено в избранное','Статус просмотра','Текущая серия','Ссылка на просмотр','Ссылка на постер','AniList ID','MAL ID','Название API','Описание','Всего серий','Длительность серии (мин)','Формат','Год','Оценка','Жанры','Постер API','Дата обновления API','Дата попытки поиска AniList','Статус поиска AniList'];
+  const headers=['Русское название','Оригинальное название','Альтернативные названия','Добавлено в избранное','Статус просмотра','Текущая серия','Ссылка на просмотр','Ссылка на постер','AniList ID','MAL ID','Название API','Описание','Описание на русском','Всего серий','Длительность серии (мин)','Формат','Год','Оценка','Жанры','Постер API','Дата обновления API','Дата попытки поиска AniList','Статус поиска AniList'];
   const rows=[headers.join(';')];
   for (const x of items) rows.push([
     x.titleRu,x.titleOrig,x.titleAlt,Number(x.favorite)===1?'Добавлено':'Не добавлено',
-    normalizeStatus(x.status),x.currentEpisode||0,x.watchLink,x.posterUrl,x.anilistId||'',x.malId||'',x.titleApi||'',x.description||'',x.totalEpisodes||'',x.episodeDuration||'',x.format||'',x.year||'',x.score||'',(x.genres||[]).join(', '),x.apiPosterUrl||'',x.metadataUpdatedAt||'',x.metadataLookupAttemptedAt||'',x.metadataLookupStatus||''
+    normalizeStatus(x.status),x.currentEpisode||0,x.watchLink,x.posterUrl,x.anilistId||'',x.malId||'',x.titleApi||'',x.description||'',x.descriptionRu||'',x.totalEpisodes||'',x.episodeDuration||'',x.format||'',x.year||'',x.score||'',(x.genres||[]).join(', '),x.apiPosterUrl||'',x.metadataUpdatedAt||'',x.metadataLookupAttemptedAt||'',x.metadataLookupStatus||''
   ].map(csvEscape).join(';'));
   const blob=new Blob(['\uFEFF'+rows.join('\r\n')],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);
@@ -855,7 +914,7 @@ const GOOGLE_DRIVE_FOLDER = 'AnimeVault Posters';
 const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
 });
-let cloudUser = null, syncBusy = false, syncTimer = null;
+let cloudUser = null, syncBusy = false, syncTimer = null, syncRequested = false, lastAutoSyncAt = 0;
 let driveTokenClient=null, driveTokenPending=null, driveAccessToken=null, driveTokenExpiresAt=0, driveFolderId=null;
 
 function initializeGoogleDrive() {
@@ -1056,8 +1115,11 @@ async function cloudSignOut() {
 async function ensureLocalCloudIds() {
   const rows=await db.anime.toArray();
   for(const row of rows) {
-    if(!row.recordUuid) await db.anime.update(row.id,{recordUuid:crypto.randomUUID(),syncUpdatedAt:new Date().toISOString()});
-    else if(!row.syncUpdatedAt) await db.anime.update(row.id,{syncUpdatedAt:new Date().toISOString()});
+    if(!row.recordUuid) {
+      const uuid=crypto.randomUUID(),updatedAt=new Date().toISOString();
+      await db.anime.update(row.id,{recordUuid:uuid,syncUpdatedAt:updatedAt});
+      await db.sync_meta.put({key:`dirty:${uuid}`,value:{recordUuid:uuid,updatedAt}});
+    } else if(!row.syncUpdatedAt) await db.anime.update(row.id,{syncUpdatedAt:new Date().toISOString()});
   }
 }
 async function uploadPosterToCloud(item) {
@@ -1113,90 +1175,146 @@ async function uploadLibraryPosters(items) {
   return {uploaded,failed,total:queue.length};
 }
 
+async function retryCloudRequest(operation,label='Supabase') {
+  let lastError;
+  for(let attempt=0;attempt<3;attempt++) {
+    try {
+      const result=await operation();
+      if(result?.error) throw result.error;
+      return result?.data??result;
+    } catch(error) {
+      lastError=error;
+      const status=Number(error?.status||error?.statusCode||0);
+      const message=String(error?.message||error||'');
+      const retryable=[408,425,429,500,502,503,504].includes(status)||(!status&&/failed to fetch|network|timeout|temporar|connection/i.test(message));
+      if(!retryable||attempt===2) throw error;
+      const retryAfter=Number(error?.retryAfter||error?.headers?.['retry-after']||0);
+      await new Promise(resolve=>setTimeout(resolve,retryAfter>0?Math.min(15000,retryAfter*1000):700*2**attempt+Math.random()*350));
+    }
+  }
+  throw lastError;
+}
+async function readRemoteChanges(cursor) {
+  const rows=[];
+  const since=cursor?new Date(Math.max(0,Date.parse(cursor)-2000)).toISOString():null;
+  for(let offset=0;;offset+=1000) {
+    const data=await retryCloudRequest(async()=>{
+      let query=supabaseClient.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).range(offset,offset+999);
+      if(since) query=query.gt('updated_at',since);
+      const {data,error}=await query;
+      return {data,error};
+    });
+    rows.push(...(data||[]));
+    if(!data||data.length<1000) break;
+  }
+  return rows;
+}
+function scheduleCloudSync(force=false) {
+  if(!cloudUser||!navigator.onLine) return;
+  if(!force&&Date.now()-lastAutoSyncAt<60000) return;
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(()=>{
+    lastAutoSyncAt=Date.now();
+    syncCloudNow();
+  },force?500:1800);
+}
 async function syncCloudNow() {
-  if(!supabaseClient || !cloudUser || syncBusy || !navigator.onLine) {
+  if(!supabaseClient||!cloudUser||!navigator.onLine) {
     if(!navigator.onLine) cloudStatus('Нет подключения к интернету. Локальная библиотека доступна.','error');
     return;
   }
-  syncBusy=true; $('cloud-sync-now').disabled=true; cloudStatus('Синхронизация…');
+  if(syncBusy){syncRequested=true;return;}
+  syncBusy=true;
+  const syncButton=$('cloud-sync-now'); if(syncButton) syncButton.disabled=true;
+  cloudStatus('Синхронизация изменений…');
   try {
     await ensureLocalCloudIds();
-    let remoteRows=[];
-    for(let offset=0;;offset+=1000) {
-      const {data,error}=await supabaseClient.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).range(offset,offset+999);
-      if(error) throw error;
-      remoteRows.push(...(data||[]));
-      if(!data || data.length<1000) break;
-    }
-    const remote=new Map((remoteRows||[]).map(row=>[row.record_id,row]));
-    const local=await db.anime.toArray();
-    const tombstones=await db.sync_meta.toArray();
-    const pendingDeletes=tombstones.filter(x=>x.key.startsWith('tombstone:'));
+    const cursorKey=`lastSync:${cloudUser.id}`;
+    const cursorRow=await db.sync_meta.get(cursorKey);
+    const cursor=cursorRow?.value||null;
+    const remoteRows=await readRemoteChanges(cursor);
+    const remote=new Map(remoteRows.map(row=>[row.record_id,row]));
+    const localRows=await db.anime.toArray();
+    const localByUuid=new Map(localRows.filter(x=>x.recordUuid).map(x=>[x.recordUuid,x]));
+    const metaRows=await db.sync_meta.toArray();
+    const pendingDeletes=metaRows.filter(x=>x.key.startsWith('tombstone:'));
     const staleDeletes=pendingDeletes.filter(x=>Date.parse(remote.get(x.value.recordUuid)?.updated_at||0)>Date.parse(x.value.deletedAt||0));
     if(staleDeletes.length) await db.sync_meta.bulkDelete(staleDeletes.map(x=>x.key));
     const effectiveDeletes=pendingDeletes.filter(x=>!staleDeletes.includes(x));
-    const deleteRows=effectiveDeletes.map(x=>({owner_id:cloudUser.id,record_id:x.value.recordUuid,payload:{},updated_at:x.value.deletedAt,deleted:true}));
-    if(deleteRows.length) {
-      const {error}=await supabaseClient.from('animevault_records').upsert(deleteRows,{onConflict:'owner_id,record_id'});
-      if(error) throw error;
+    if(effectiveDeletes.length) {
+      const deleteRows=effectiveDeletes.map(x=>({owner_id:cloudUser.id,record_id:x.value.recordUuid,payload:{},updated_at:x.value.deletedAt,deleted:true}));
+      await retryCloudRequest(()=>supabaseClient.from('animevault_records').upsert(deleteRows,{onConflict:'owner_id,record_id'}));
       await db.sync_meta.bulkDelete(effectiveDeletes.map(x=>x.key));
-      for(const tombstone of effectiveDeletes) {
-        const prior=remote.get(tombstone.value.recordUuid);
-        const deletedRow={record_id:tombstone.value.recordUuid,payload:{},updated_at:tombstone.value.deletedAt,deleted:true};
-        remote.set(tombstone.value.recordUuid,deletedRow);
-        const idx=remoteRows.findIndex(row=>row.record_id===tombstone.value.recordUuid);
-        if(idx>=0) remoteRows[idx]=deletedRow;
-      }
+      for(const row of deleteRows) remote.set(row.record_id,{record_id:row.record_id,payload:{},updated_at:row.updated_at,deleted:true});
     }
-    let pulled=0, pushed=0;
-    for(const row of remoteRows||[]) {
-      const item=local.find(x=>x.recordUuid===row.record_id);
+    let pulled=0;
+    for(const row of remoteRows) {
+      const item=localByUuid.get(row.record_id);
       if(!item) {
-        if(!row.deleted && row.payload && typeof row.payload==='object') {
+        if(!row.deleted&&row.payload&&typeof row.payload==='object') {
           applyingCloudData=true;
-          try { const copy={...row.payload}; delete copy.id; copy.recordUuid=row.record_id; copy.syncUpdatedAt=row.updated_at; await db.anime.add(copy); pulled++; }
-          finally { applyingCloudData=false; }
+          try {
+            const copy={...row.payload};delete copy.id;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;
+            const id=await db.anime.add(copy);localByUuid.set(row.record_id,{...copy,id});pulled++;
+          } finally { applyingCloudData=false; }
         }
         continue;
       }
-      const localTime=Date.parse(item.syncUpdatedAt||0), remoteTime=Date.parse(row.updated_at||0);
-      if(remoteTime>localTime) {
+      if(Date.parse(row.updated_at||0)>Date.parse(item.syncUpdatedAt||0)) {
         applyingCloudData=true;
         try {
-          if(row.deleted) { item._remoteDelete=true; await db.anime.delete(item.id); }
-          else if(row.payload && typeof row.payload==='object') { const copy={...row.payload}; delete copy.id; copy.recordUuid=row.record_id; copy.syncUpdatedAt=row.updated_at; await db.anime.update(item.id,copy); }
+          if(row.deleted){await db.anime.delete(item.id);localByUuid.delete(row.record_id);}
+          else if(row.payload&&typeof row.payload==='object') {
+            const copy={...row.payload};delete copy.id;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;
+            await db.anime.update(item.id,copy);localByUuid.set(row.record_id,{...item,...copy});
+          }
           pulled++;
         } finally { applyingCloudData=false; }
       }
     }
-    cloudStatus('Записи синхронизированы. Проверяем постеры и загружаем их в облако…');
-    const posterResult=driveAccessToken
-      ? await uploadLibraryPosters(await db.anime.toArray())
-      : {uploaded:0,failed:0,total:0,skipped:true};
-    const refresh=await db.anime.toArray();
+    let posterResult={uploaded:0,failed:0,total:0,skipped:true};
+    if(driveAccessToken) {
+      const refreshed=await db.anime.toArray();
+      posterResult=await uploadLibraryPosters(refreshed);
+    }
+    const dirtyRows=(await db.sync_meta.toArray()).filter(x=>x.key.startsWith('dirty:'));
+    const dirtyIds=new Set(dirtyRows.map(x=>x.value?.recordUuid).filter(Boolean));
+    const currentLocal=await db.anime.toArray();
+    const candidates=cursor?currentLocal.filter(x=>dirtyIds.has(x.recordUuid)):currentLocal;
     const upserts=[];
-    for(const item of refresh) {
+    for(const item of candidates) {
+      if(!item.recordUuid) continue;
       const cloud=remote.get(item.recordUuid);
-      const localTime=Date.parse(item.syncUpdatedAt||0), remoteTime=Date.parse(cloud?.updated_at||0);
-      if(!cloud || localTime>remoteTime) {
-        const payload={...item}; delete payload.id;
-        upserts.push({owner_id:cloudUser.id,record_id:item.recordUuid,payload,updated_at:item.syncUpdatedAt||new Date().toISOString(),deleted:false});
-      }
+      if(cloud?.deleted&&Date.parse(cloud.updated_at||0)>=Date.parse(item.syncUpdatedAt||0)) continue;
+      if(cloud&&!cloud.deleted&&Date.parse(cloud.updated_at||0)>Date.parse(item.syncUpdatedAt||0)) continue;
+      const payload={...item};delete payload.id;
+      upserts.push({owner_id:cloudUser.id,record_id:item.recordUuid,payload,updated_at:item.syncUpdatedAt||new Date().toISOString(),deleted:false});
     }
     for(let i=0;i<upserts.length;i+=100) {
-      const {error}=await supabaseClient.from('animevault_records').upsert(upserts.slice(i,i+100),{onConflict:'owner_id,record_id'});
-      if(error) throw error; pushed+=Math.min(100,upserts.length-i);
+      const chunk=upserts.slice(i,i+100);
+      await retryCloudRequest(()=>supabaseClient.from('animevault_records').upsert(chunk,{onConflict:'owner_id,record_id'}));
+      for(const sent of chunk) {
+        const current=await db.anime.where('recordUuid').equals(sent.record_id).first();
+        if(current&&current.syncUpdatedAt===sent.updated_at) await db.sync_meta.delete(`dirty:${sent.record_id}`);
+      }
     }
-    cloudStatus(`Синхронизация записей завершена: получено ${pulled}, отправлено ${pushed}.`+(posterResult.skipped
+    const remoteMax=remoteRows.reduce((max,row)=>!max||Date.parse(row.updated_at)>Date.parse(max)?row.updated_at:max,cursor||null);
+    if(remoteMax) await db.sync_meta.put({key:cursorKey,value:remoteMax});
+    const now=new Date().toISOString();
+    await db.sync_meta.put({key:`lastSyncAt:${cloudUser.id}`,value:now});
+    cloudStatus(`Синхронизация завершена: получено ${pulled}, отправлено ${upserts.length} изменений.`+(posterResult.skipped
       ? ' Подключите Google Drive, чтобы перенести постеры.'
-      : ` Постеры Google Drive: проверено ${posterResult.total}, загружено ${posterResult.uploaded}, ошибок ${posterResult.failed}.`),'success');
-    $('cloud-last-sync').textContent=`Последняя синхронизация: ${new Date().toLocaleString('ru-RU')}`;
+      : ` Google Drive: проверено ${posterResult.total}, загружено ${posterResult.uploaded}, ошибок ${posterResult.failed}.`),'success');
+    const last=$('cloud-last-sync');if(last) last.textContent=`Последняя синхронизация: ${new Date(now).toLocaleString('ru-RU')}`;
     await loadAnimeData();
   } catch(err) {
     console.error('AnimeVault cloud sync:',err);
-    const msg=err?.message || 'Неизвестная ошибка';
-    cloudStatus(msg.includes('animevault_records') || msg.includes('relation') ? 'Таблица Supabase ещё не настроена. Выполните SQL из файла SUPABASE_SETUP.sql.' : `Ошибка синхронизации: ${msg}`,'error');
-  } finally { syncBusy=false; $('cloud-sync-now').disabled=false; }
+    const msg=err?.message||'Неизвестная ошибка';
+    cloudStatus(msg.includes('animevault_records')||msg.includes('relation')?'Таблица Supabase ещё не настроена. Выполните SQL из файла SUPABASE_SETUP.sql.':`Ошибка синхронизации: ${msg}`,'error');
+  } finally {
+    syncBusy=false;if(syncButton) syncButton.disabled=false;
+    if(syncRequested){syncRequested=false;scheduleCloudSync(true);}
+  }
 }
 async function initCloudAuth() {
   if(!supabaseClient) { cloudStatus('Не удалось загрузить Supabase SDK.','error'); return; }
@@ -1215,14 +1333,15 @@ async function initCloudAuth() {
   const {data:{session}}=await supabaseClient.auth.getSession();
   setCloudSignedIn(session?.user || null);
   supabaseClient.auth.onAuthStateChange((_event,nextSession)=>{
-    setCloudSignedIn(nextSession?.user || null);
-    if(nextSession?.user) setTimeout(()=>syncCloudNow(),0);
+    setCloudSignedIn(nextSession?.user||null);
+    if(nextSession?.user) scheduleCloudSync(true);
+    else {clearTimeout(syncTimer);syncRequested=false;}
   });
   if(session?.user) await syncCloudNow();
-  window.addEventListener('online',()=>{if(cloudUser) syncCloudNow();});
-  window.addEventListener('focus',()=>{if(cloudUser) syncCloudNow();});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden && cloudUser) syncCloudNow();});
-  syncTimer=setInterval(()=>{if(cloudUser && !document.hidden) syncCloudNow();},60000);
+  window.addEventListener('online',()=>scheduleCloudSync(true));
+  window.addEventListener('focus',()=>scheduleCloudSync(false));
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleCloudSync(false);});
+  syncTimer=setInterval(()=>{if(cloudUser&&!document.hidden)scheduleCloudSync(false);},300000);
 }
 
 function bindEvents() {
