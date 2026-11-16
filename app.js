@@ -1104,7 +1104,13 @@ async function connectGoogleDrive() {
     cloudStatus('Google Drive подключён. Проверяем библиотеку и переносим постеры…','success');
     if(syncBusy) await new Promise(resolve=>{const wait=()=>syncBusy?setTimeout(wait,250):resolve();wait();});
     await syncCloudNow(); await loadAnimeData();
-  } catch(error) { cloudStatus(error?.message||'Не удалось подключить Google Drive. Проверьте OAuth и тестовый доступ.','error'); }
+  } catch(error) {
+    const message=String(error?.message||error||'Не удалось подключить Google Drive.');
+    const guidance=/origin|invalid_client|not registered/i.test(message)
+      ? 'Google OAuth: добавьте в Google Cloud → Credentials → OAuth Client → Authorized JavaScript origins адрес https://maestro-777.github.io. Список Test users — отдельная настройка и не заменяет origin.'
+      : message;
+    cloudStatus(guidance,'error');
+  }
   finally { if(button) button.disabled=false; }
 }
 async function disconnectGoogleDrive() {
