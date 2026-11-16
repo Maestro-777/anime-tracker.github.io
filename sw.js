@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v152-player-search-relevance';
+const CACHE_NAME = 'animevault-shell-v153-yandex-player-search';
 const APP_SHELL = [
   './',
   './index.html',
