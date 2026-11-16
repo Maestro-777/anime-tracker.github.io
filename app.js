@@ -1051,11 +1051,29 @@ function clearGoogleDriveSession(revoke=false) {
 }
 async function driveFetch(url,options={}) {
   if(!driveAccessToken || Date.now()>driveTokenExpiresAt-30000) throw new Error('Сеанс Google Drive истёк. Нажмите «Подключить Google Drive» ещё раз.');
+  const method=String(options.method||'GET').toUpperCase();
   const headers=new Headers(options.headers||{}); headers.set('Authorization',`Bearer ${driveAccessToken}`);
-  const response=await fetch(url,{...options,headers});
-  if(response.status===401) { clearGoogleDriveSession(false); throw new Error('Google Drive завершил сеанс. Подключите его повторно.'); }
-  if(!response.ok) { const detail=await response.text().catch(()=>''); throw new Error(`Google Drive HTTP ${response.status}: ${detail.slice(0,240)||response.statusText}`); }
-  return response;
+  for(let attempt=0;attempt<3;attempt++) {
+    let response;
+    try { response=await fetch(url,{...options,headers}); }
+    catch(error) {
+      if(attempt===2||method==='POST') throw error;
+      await new Promise(resolve=>setTimeout(resolve,500*2**attempt));
+      continue;
+    }
+    if(response.status===401) { clearGoogleDriveSession(false); throw new Error('Google Drive завершил сеанс. Подключите его повторно.'); }
+    if(response.ok) return response;
+    const detail=await response.text().catch(()=>'');
+    const error=new Error(`Google Drive HTTP ${response.status}: ${detail.slice(0,240)||response.statusText}`);
+    error.status=response.status;
+    if(method!=='POST'&&[408,425,429,500,502,503,504].includes(response.status)&&attempt<2) {
+      const retryAfter=Number(response.headers.get('Retry-After')||0);
+      await new Promise(resolve=>setTimeout(resolve,retryAfter>0?Math.min(15000,retryAfter*1000):600*2**attempt));
+      continue;
+    }
+    throw error;
+  }
+  throw new Error('Google Drive request failed after retries.');
 }
 async function ensureGoogleDriveFolder() {
   if(driveFolderId) return driveFolderId;
@@ -1080,7 +1098,7 @@ async function disconnectGoogleDrive() {
   clearGoogleDriveSession(true);
   cloudStatus('Google Drive отключён. Локальный кэш постеров сохранён.','info');
 }
-async function fetchPosterFromAniList(sourceUrl) {
+async function fetchPosterFromSource(sourceUrl) {
   const {data:{session}}=await supabaseClient.auth.getSession();
   if(!session?.access_token) throw new Error('Сначала войдите в AnimeVault через GitHub.');
   const response=await fetch(`${SUPABASE_URL}/functions/v1/fetch-poster`,{
@@ -1097,9 +1115,17 @@ async function findDrivePoster(name,folderId) {
   return data.files?.[0]||null;
 }
 async function uploadBlobToDrive(blob,name,mimeType,folderId,existingFileId=null) {
-  const existing=existingFileId?{id:existingFileId}:await findDrivePoster(name,folderId), fields='id,name,mimeType,size';
-  if(existing?.id) {
-    return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existing.id)}?uploadType=media&fields=${fields}`,{method:'PATCH',headers:{'Content-Type':mimeType},body:blob})).json();
+  const fields='id,name,mimeType,size';
+  if(existingFileId) {
+    try {
+      return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingFileId)}?uploadType=media&fields=${fields}`,{method:'PATCH',headers:{'Content-Type':mimeType},body:blob})).json();
+    } catch(error) {
+      if(Number(error?.status)!==404) throw error;
+      console.warn('AnimeVault: старый файл постера не найден в Google Drive, создаём новый.',existingFileId);
+    }
+  } else {
+    const existing=await findDrivePoster(name,folderId);
+    if(existing?.id) return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existing.id)}?uploadType=media&fields=${fields}`,{method:'PATCH',headers:{'Content-Type':mimeType},body:blob})).json();
   }
   const boundary=`animevault_${crypto.randomUUID().replace(/-/g,'')}`;
   const metadata={name,mimeType,parents:[folderId]};
@@ -1227,8 +1253,8 @@ async function uploadPosterToCloud(item) {
   try {
     if(!driveAccessToken) throw new Error('Google Drive не подключён.');
     if(!sourceUrl||!sourceUrl.startsWith('https://')) throw new Error('Нужен безопасный HTTPS-адрес постера.');
-    stage='Скачивание через Supabase Edge Function';
-    blob=await fetchPosterFromAniList(sourceUrl);
+    stage='Скачивание через защищённый серверный прокси';
+    blob=await fetchPosterFromSource(sourceUrl);
     const type=(blob.type||'').split(';')[0].toLowerCase();
     const allowed=['image/jpeg','image/png','image/webp','image/gif','image/avif'];
     if(!allowed.includes(type)) throw new Error(`Источник вернул неподдерживаемый тип изображения: ${type||'не указан'}`);
