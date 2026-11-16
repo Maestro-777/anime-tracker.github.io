@@ -94,6 +94,9 @@ Deno.serve(async (request: Request) => {
     if(shikimoriDescription && /[А-Яа-яЁё]/.test(shikimoriDescription)) {
       return json({descriptionRu:shikimoriDescription,source:"shikimori"},200,cors);
     }
+    if(!shikimoriDescription && /[А-Яа-яЁё]/.test(original)) {
+      return json({descriptionRu:original,source:"anilist_russian"},200,cors);
+    }
     const textToTranslate=shikimoriDescription||original;
     if(!textToTranslate) return json({descriptionRu:"",source:"not_found"},200,cors);
     const descriptionRu=await translateToRussian(textToTranslate);
