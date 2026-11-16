@@ -25,7 +25,7 @@ npx supabase link --project-ref ytmnsnvxjhpejidcndyw
 npx supabase functions deploy fetch-anime-description
 ```
 
-Функция использует JWT AnimeVault (`verify_jwt = true`), публичный read API Shikimori и резервный Google Translate endpoint. Секреты и service-role ключ в браузере не нужны. Если резервный сервис перевода временно недоступен, запись помечается как ошибка и может быть повторно обработана.
+Функция использует JWT AnimeVault (`verify_jwt = true`), публичный read API Shikimori и резервный Google Translate web endpoint без ключа. Этот endpoint не является стабильным публичным API Google и может ограничиваться/меняться; при сбое запись помечается как ошибка и может быть повторно обработана. Секреты и service-role ключ в браузере не нужны.
 
 ## Проверка перед публикацией
 
