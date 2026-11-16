@@ -2,7 +2,7 @@
 'use strict';
 
 const DB_NAME = 'AnimeTrackerDB';
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 const STATUSES = ['Смотрю', 'В планах', 'Просмотрено', 'Отложено', 'Брошено'];
 const STATUS_ALIASES = {
   'просмотренно': 'Просмотрено', 'просмотрено': 'Просмотрено',
