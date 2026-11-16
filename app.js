@@ -368,38 +368,6 @@ async function fetchAnimeMetadata(title) {
   if(row?.status==='error') throw new Error(row.error||'Все источники поиска аниме недоступны.');
   return row?.metadata||null;
 }
-const DESCRIPTION_TRANSLATION_COOLDOWN_KEY = 'animevault-translation-cooldown-until-v1';
-function getDescriptionTranslationCooldown() {
-  try { return Math.max(0, Number(localStorage.getItem(DESCRIPTION_TRANSLATION_COOLDOWN_KEY)) || 0); }
-  catch { return 0; }
-}
-function setDescriptionTranslationCooldown(retryAfterMs) {
-  const until = Date.now() + Math.max(60_000, Math.min(6 * 60 * 60_000, Number(retryAfterMs) || 15 * 60_000));
-  try { localStorage.setItem(DESCRIPTION_TRANSLATION_COOLDOWN_KEY, String(until)); } catch {}
-  return until;
-}
-async function fetchRussianDescription(item) {
-  if(!supabaseClient) throw new Error('Supabase SDK недоступен для получения русского описания.');
-  const {data:{session}}=await supabaseClient.auth.getSession();
-  if(!session?.access_token) throw new Error('Для получения русского описания войдите в AnimeVault.');
-  const response=await fetch(SUPABASE_URL+'/functions/v1/fetch-anime-description',{
-    method:'POST',
-    headers:{'Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
-    body:JSON.stringify({title:item.titleRu||item.titleOrig||item.titleApi||'',malId:item.malId||null,description:item.description||''})
-  });
-  if(!response.ok){
-    const detail=await response.text().catch(()=>'');
-    let payload={}; try { payload=JSON.parse(detail); } catch {}
-    const header=response.headers.get('Retry-After');
-    const headerMs=header?(Number.isFinite(Number(header))?Number(header)*1000:Math.max(0,Date.parse(header)-Date.now())):0;
-    const cooldownUntil=response.status===429?setDescriptionTranslationCooldown(headerMs || Number(payload.retryAfterSeconds)*1000 || 15*60_000):0;
-    const error=new Error('Русское описание HTTP '+response.status+': '+String(payload.error||detail).slice(0,180));
-    error.status=response.status;
-    if(cooldownUntil) error.retryAfterMs=cooldownUntil-Date.now();
-    throw error;
-  }
-  return response.json();
-}
 async function fetchPosterUrl(title) {
   if (!title.trim()) return '';
   const metadata=await fetchAnimeMetadata(title);
@@ -490,43 +458,8 @@ async function enrichOne(item, metadataMap=null) {
     };
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
-    const shikimoriDescription=meta.metadataProvider==='Shikimori'?meta.description:(item.metadataProvider==='Shikimori'?item.description:'');
-    if(!item.descriptionRu && /[А-Яа-яЁё]/.test(String(shikimoriDescription||''))) {
-      patch.descriptionRu=String(shikimoriDescription).slice(0,4000);
-      patch.descriptionRuSource='shikimori';
-      patch.descriptionRuStatus='found';
-      patch.descriptionRuUpdatedAt=new Date().toISOString();
-      patch.descriptionRuRetryAt=null;
-      patch.descriptionRuError='';
-    }
-    if(!patch.descriptionRu && (!item.descriptionRu || item.descriptionRuStatus==='error')) {
-      const translationCooldownUntil=getDescriptionTranslationCooldown();
-      if(translationCooldownUntil>Date.now()) {
-        patch.descriptionRuStatus='deferred';
-        patch.descriptionRuRetryAt=new Date(translationCooldownUntil).toISOString();
-        patch.descriptionRuError='';
-      } else try {
-        const ru=await fetchRussianDescription(merged);
-        if(ru?.descriptionRu) {
-          patch.descriptionRu=String(ru.descriptionRu).slice(0,4000);
-          patch.descriptionRuSource=ru.source||'shikimori';
-          patch.descriptionRuStatus='found';
-          patch.descriptionRuUpdatedAt=new Date().toISOString();
-          patch.descriptionRuRetryAt=null;
-          patch.descriptionRuError='';
-        } else { patch.descriptionRuStatus='not_found'; patch.descriptionRuRetryAt=null; patch.descriptionRuError=''; }
-      } catch(err) {
-        const isRateLimited=Number(err?.status)===429;
-        const attempts=(Number(item.descriptionRuAttempts)||0)+(isRateLimited?0:1);
-        patch.descriptionRuStatus=isRateLimited?'deferred':'error';
-        if(!isRateLimited) patch.descriptionRuAttempts=attempts;
-        patch.descriptionRuRetryAt=new Date(Date.now()+(err?.retryAfterMs||Math.min(24*60*60*1000,30*60*1000*Math.pow(2,Math.max(0,attempts-1))))).toISOString();
-        patch.descriptionRuError=isRateLimited?'':String(err?.message||err).slice(0,180);
-      }
-    }
     await db.anime.update(item.id,patch);
-    if(patch.descriptionRuStatus==='deferred') return 'deferred';
-    return patch.descriptionRuStatus==='error'?'error':(russianOnly&&!patch.descriptionRu?'miss':'ok');
+    return russianOnly?'miss':'ok';
   } catch(err) {
     console.warn('Metadata lookup failed:',item.titleRu,err);
     const attempts=(Number(item.metadataLookupAttempts)||0)+1;
@@ -577,12 +510,9 @@ async function enrichLibrary() {
       (x.metadataLookupStatus==='error' && Date.parse(x.metadataRetryAt||0)<=now) ||
       (x.metadataLookupStatus==='not_found' && Date.parse(x.metadataRetryAt||0)<=now)
     );
-    const hasRussianSource=!!(x.anilistId || x.description || x.metadataUpdatedAt || x.metadataLookupStatus==='not_found');
-    const descriptionDue=!x.descriptionRu && x.descriptionRuStatus!=='not_found' && hasRussianSource &&
-      (!['error','deferred'].includes(x.descriptionRuStatus) || Date.parse(x.descriptionRuRetryAt||0)<=now);
-    return metadataDue || descriptionDue;
+    return metadataDue;
   });
-  let done=0, found=0, missed=0, errors=0, deferred=0;
+  let done=0, found=0, missed=0, errors=0;
   const button = $('btn-enrich-start');
   const stopButton = $('btn-stop-enrich');
   if (button) button.disabled = true;
@@ -623,20 +553,19 @@ async function enrichLibrary() {
         if(result==='ok'){found++;addEnrichmentLog(`✓ Обработано: ${item.titleRu||item.titleOrig}`,'success');}
         else if(result==='miss'){missed++;addEnrichmentLog(`— Не найдено в каталогах API: ${item.titleRu||item.titleOrig}`,'muted');}
         else if(result==='no_title'){missed++;addEnrichmentLog(`Пропуск записи без названия (ID ${item.id}).`,'muted');}
-        else if(result==='deferred'){deferred++;addEnrichmentLog(`↷ Перевод отложен до снятия ограничения: ${item.titleRu||item.titleOrig}`,'muted');}
-        else {errors++;const failed=await db.anime.get(item.id);addEnrichmentLog(`Ошибка: ${item.titleRu||item.titleOrig} — ${failed?.metadataLookupError||failed?.descriptionRuError||'временная ошибка API'}`,'error');}
+        else {errors++;const failed=await db.anime.get(item.id);addEnrichmentLog(`Ошибка: ${item.titleRu||item.titleOrig} — ${failed?.metadataLookupError||'временная ошибка API'}`,'error');}
         $('enrich-done').textContent=done.toLocaleString('ru-RU');
         $('enrich-found').textContent=found.toLocaleString('ru-RU');
         $('enrich-missed').textContent=missed.toLocaleString('ru-RU');
         $('enrich-errors').textContent=errors.toLocaleString('ru-RU');
         $('enrich-progress-bar').style.width=`${queue.length?done/queue.length*100:100}%`;
-        setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · отложено ${deferred} · ошибок ${errors}`);
+        setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`);
       }
       if(done%10===0||done===queue.length) await loadAnimeData();
       if(i+3<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,2500));
     }
     await loadAnimeData();
-    const status = enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Завершено: найдено ${found}, не найдено ${missed}, отложено ${deferred}, ошибок ${errors}`;
+    const status = enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Завершено: найдено ${found}, не найдено ${missed}, ошибок ${errors}`;
     addEnrichmentLog(status, enrichmentCancel ? 'muted' : 'success');
     showToast(enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Обновление завершено: найдено ${found}`, enrichmentCancel?'info':'success');
   } finally {
@@ -1600,9 +1529,9 @@ function bindEvents() {
   $('btn-enrich-start').addEventListener('click',enrichLibrary);
   $('btn-api-diagnostics')?.addEventListener('click',runApiDiagnostics);
   $('btn-retry-enrich-errors')?.addEventListener('click',async()=>{
-    const failed=await db.anime.filter(x=>x.metadataLookupStatus==='error'||x.descriptionRuStatus==='error').toArray();
+    const failed=await db.anime.filter(x=>x.metadataLookupStatus==='error').toArray();
     const due=new Date(0).toISOString();
-    for(const item of failed){const patch={};if(item.metadataLookupStatus==='error')patch.metadataRetryAt=due;if(item.descriptionRuStatus==='error')patch.descriptionRuRetryAt=due;if(Object.keys(patch).length)await db.anime.update(item.id,patch);}
+    for(const item of failed){const patch={};if(item.metadataLookupStatus==='error')patch.metadataRetryAt=due;if(Object.keys(patch).length)await db.anime.update(item.id,patch);}
     addEnrichmentLog(`Принудительный повтор: ${failed.length} записей.`,'info'); await enrichLibrary();
   });
   $('btn-stop-enrich').addEventListener('click',()=>{enrichmentCancel=true;setEnrichmentSummary('Остановка после текущего запроса…');addEnrichmentLog('Запрошена остановка. Дождёмся завершения текущего запроса.','muted');});
