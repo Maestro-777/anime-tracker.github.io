@@ -1723,12 +1723,14 @@ async function openPlayer(id){
 }
 function renderPlayerSources(sources,voice){const filtered=sources.filter(s=>String(s.voice||'Оригинал')===voice);$('player-source').innerHTML=filtered.map(s=>'<option value="'+s._index+'">'+escapeHTML(s.label||s.quality||s.type.toUpperCase()+' источник '+(s._index+1))+'</option>').join('');}
 async function selectPlayerEpisode(episode){
+ await savePlayerProgress(true);
  const item=await db.anime.get(playerAnimeId);if(!item)return;const sources=playerSourcesFor(item,episode),voices=[...new Set(sources.map(s=>String(s.voice||'Оригинал')))];
  $('player-voice').innerHTML=voices.map(v=>'<option value="'+escapeHTML(v)+'">'+escapeHTML(v)+'</option>').join('');
  if(!voices.length){$('player-source').innerHTML='';$('player-status').textContent='Для этой серии пока нет источников. Добавьте ссылку ниже.';$('player-video-wrap').classList.add('hidden');$('player-empty').classList.remove('hidden');return;}
  $('player-video-wrap').classList.remove('hidden');$('player-empty').classList.add('hidden');renderPlayerSources(sources,voices[0]);await loadPlayerSource(Number($('player-source').value));
 }
 async function loadPlayerSource(index){
+ await savePlayerProgress(true);
  const item=await db.anime.get(playerAnimeId);if(!item)return;const ep=Number($('player-episode').value),voice=$('player-voice').value,source=(item.playerSources||[])[index];
  if(!source||Number(source.episode)!==ep||String(source.voice||'Оригинал')!==voice)return;
  const url=safeURL(source.url);if(!url)return;playerActiveSource={...source,index,episode:ep};
@@ -1747,10 +1749,10 @@ async function addPlayerSource(e){
  e.preventDefault();const episode=Math.max(1,Number($('player-add-episode').value)||1),voice=$('player-add-voice').value.trim()||'Оригинал',url=safeURL($('player-add-url').value);
  if(!url){showToast('Укажите корректную ссылку HTTP(S).','error');return;}const type=$('player-add-type').value,quality=$('player-add-quality').value.trim(),label=$('player-add-label').value.trim()||quality||type.toUpperCase()+' источник';
  const item=await db.anime.get(playerAnimeId);if(!item)return;await db.anime.update(playerAnimeId,{playerSources:[...(item.playerSources||[]),{episode,voice,url,type,quality,label}]});
- $('player-add-url').value='';$('player-add-label').value='';$('player-episode').innerHTML='<option value="'+episode+'">'+episode+' серия</option>';await selectPlayerEpisode(episode);showToast('Источник добавлен.','success');
+ $('player-add-url').value='';$('player-add-label').value='';const updated=await db.anime.get(playerAnimeId),allEpisodes=playerEpisodes(updated);$('player-episode').innerHTML=allEpisodes.map(n=>'<option value="'+n+'" '+(n===episode?'selected':'')+'>'+n+' серия</option>').join('');await selectPlayerEpisode(episode);showToast('Источник добавлен.','success');
 }
 function bindPlayerEvents(){
- $('player-close').addEventListener('click',closePlayer);$('player-modal').addEventListener('click',e=>{if(e.target===$('player-modal'))closePlayer();});
+ $('player-close').addEventListener('click',closePlayer);$('player-modal').addEventListener('click',e=>{if(e.target===$('player-modal'))closePlayer();});document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('player-modal').classList.contains('is-open'))closePlayer();});
  $('player-episode').addEventListener('change',e=>selectPlayerEpisode(Number(e.target.value)));
  $('player-voice').addEventListener('change',async e=>{const item=await db.anime.get(playerAnimeId);if(!item)return;renderPlayerSources(playerSourcesFor(item,Number($('player-episode').value)),e.target.value);await loadPlayerSource(Number($('player-source').value));});
  $('player-source').addEventListener('change',e=>loadPlayerSource(Number(e.target.value)));$('player-quality').addEventListener('change',e=>{if(playerHls)playerHls.currentLevel=Number(e.target.value);});
