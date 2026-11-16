@@ -862,16 +862,16 @@ function duplicateKey(item) {
 function animeRecordRichness(item) {
   return [
     item.anilistId,item.malId,item.shikimoriId,item.kitsuId,
-    item.posterDriveFileId,item.posterUrl,item.apiPosterUrl,item.posterCloudUrl,
+    item.posterDriveFileId,item.posterUrl,item.apiPosterUrl,
     item.description,item.descriptionRu,item.watchLink,item.totalEpisodes,
-    item.format,item.year,item.score,Array.isArray(item.genres)&&item.genres.length
+    item.format,item.year,item.score
   ].filter(Boolean).length;
 }
 function mergeAnimeRecords(records) {
   const sorted=[...records].sort((a,b)=>
     animeRecordRichness(b)-animeRecordRichness(a) ||
     Date.parse(b.syncUpdatedAt||0)-Date.parse(a.syncUpdatedAt||0) ||
-    Number(a.id)-Number(b.id)
+    String(a.recordUuid||'').localeCompare(String(b.recordUuid||''))
   );
   const keeper=sorted[0], latest=[...records].sort((a,b)=>Date.parse(b.syncUpdatedAt||0)-Date.parse(a.syncUpdatedAt||0))[0];
   const merged={...keeper};
@@ -891,6 +891,7 @@ function mergeAnimeRecords(records) {
   merged.favorite=records.some(item=>Number(item.favorite)===1)?1:0;
   merged.currentEpisode=Math.max(0,...records.map(item=>Number(item.currentEpisode)||0));
   merged.recordUuid=keeper.recordUuid;
+  delete merged.id;
   merged.syncUpdatedAt=new Date().toISOString();
   merged.syncDirty=1;
   merged.posterPending=merged.posterDriveFileId?0:((merged.posterUrl||merged.apiPosterUrl)?1:0);
