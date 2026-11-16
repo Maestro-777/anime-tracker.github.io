@@ -373,8 +373,8 @@ async function fetchRussianDescription(item) {
 }
 async function fetchPosterUrl(title) {
   if (!title.trim()) return '';
-  try { const m = await fetchAnimeMetadata(title); return m?.apiPosterUrl || ''; }
-  catch (err) { console.warn('AniList lookup failed:', err); return ''; }
+  const metadata=await fetchAnimeMetadata(title);
+  return metadata?.apiPosterUrl || '';
 }
 const ENRICH_LOG_KEY = 'animevault-enrichment-log-v1';
 let enrichmentLog = [];
@@ -710,14 +710,19 @@ async function searchPoster() {
   if (!title) { showToast('Сначала укажите название аниме', 'error'); return; }
   els.posterSearch.disabled = true;
   els.posterSearch.textContent = 'Ищем…';
-  const url = await fetchPosterUrl(title);
-  els.posterSearch.disabled = false;
-  els.posterSearch.textContent = 'Найти через AniList';
-  if (url) {
-    els.poster.value = url;
-    updatePosterPreview();
-    showToast('Постер найден. Сохраните карточку.');
-  } else showToast('Постер не найден. Можно вставить ссылку вручную.', 'error');
+  try {
+    const url = await fetchPosterUrl(title);
+    if (url) {
+      els.poster.value = url;
+      updatePosterPreview();
+      showToast('Постер найден через API. Сохраните карточку.');
+    } else showToast('Совпадение найдено, но у него нет постера.', 'error');
+  } catch(error) {
+    showToast(`Поиск постера: ${error?.message||'ошибка API'}`, 'error');
+  } finally {
+    els.posterSearch.disabled = false;
+    els.posterSearch.textContent = 'Найти через API';
+  }
 }
 async function handleFormSubmit(event) {
   event.preventDefault();
@@ -726,7 +731,10 @@ async function handleFormSubmit(event) {
   const id = Number(els.editId.value) || null;
   const existing = id ? await db.anime.get(id) : null;
   let posterValue = safeURL(els.poster.value);
-  if (!posterValue && !existing) posterValue = await fetchPosterUrl(els.titleOrig.value.trim() || titleRu);
+  if (!posterValue && !existing) {
+    try { posterValue = await fetchPosterUrl(els.titleOrig.value.trim() || titleRu); }
+    catch(error) { console.warn('Auto poster lookup skipped:',error); }
+  }
   const data = {
     titleRu,
     titleOrig: els.titleOrig.value.trim(),
@@ -823,7 +831,7 @@ function parseCSV(text) {
     episode: find('текущая серия','серия','episode'),
     link: find('ссылка на просмотр','ссылка','watchlink','watch link'),
     poster: find('ссылка на постер','постер','poster'),
-    anilistId: find('anilist id'), malId:find('mal id'), apiTitle:find('название api'), description: find('описание','description'), descriptionRu:find('описание на русском','русское описание','описание ru','description ru'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
+    anilistId: find('anilist id'), malId:find('mal id'), shikimoriId:find('shikimori id'), kitsuId:find('kitsu id'), provider:find('источник api','провайдер api','metadata provider'), apiTitle:find('название api'), description: find('описание','description'), descriptionRu:find('описание на русском','русское описание','описание ru','description ru'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
   };
   if (idx.ru < 0) throw new Error('Не найден столбец с русским названием.');
   const result=[];
@@ -851,7 +859,7 @@ function parseCSV(text) {
       currentEpisode: idx.episode >= 0 ? Math.max(0,parseInt(get('episode'),10)||0) : null,
       watchLink: idx.link >= 0 ? safeURL(get('link')) : '',
       posterUrl: idx.poster >= 0 ? safeURL(get('poster')) : '',
-      anilistId: get('anilistId') ? Number(get('anilistId')) : null, malId:get('malId')?Number(get('malId')):null, titleApi:get('apiTitle'), description:get('description'), descriptionRu:get('descriptionRu'), totalEpisodes:idx.totalEpisodes>=0?(parseInt(get('totalEpisodes'),10)||null):null, episodeDuration:idx.duration>=0?(parseInt(get('duration'),10)||null):null, format:get('format'), year:idx.year>=0?(parseInt(get('year'),10)||null):null, score:idx.score>=0?(parseInt(get('score'),10)||null):null, genres:get('genres')?get('genres').split(/[,|]/).map(x=>x.trim()).filter(Boolean):[], apiPosterUrl:idx.apiPoster>=0?safeURL(get('apiPoster')):'', metadataUpdatedAt:get('metadataUpdated'), metadataLookupAttemptedAt:get('metadataAttempt'), metadataLookupStatus:get('metadataLookupStatus')
+      anilistId: get('anilistId') ? Number(get('anilistId')) : null, malId:get('malId')?Number(get('malId')):null, shikimoriId:get('shikimoriId')?Number(get('shikimoriId')):null, kitsuId:get('kitsuId'), metadataProvider:get('provider'), titleApi:get('apiTitle'), description:get('description'), descriptionRu:get('descriptionRu'), totalEpisodes:idx.totalEpisodes>=0?(parseInt(get('totalEpisodes'),10)||null):null, episodeDuration:idx.duration>=0?(parseInt(get('duration'),10)||null):null, format:get('format'), year:idx.year>=0?(parseInt(get('year'),10)||null):null, score:idx.score>=0?(parseInt(get('score'),10)||null):null, genres:get('genres')?get('genres').split(/[,|]/).map(x=>x.trim()).filter(Boolean):[], apiPosterUrl:idx.apiPoster>=0?safeURL(get('apiPoster')):'', metadataUpdatedAt:get('metadataUpdated'), metadataLookupAttemptedAt:get('metadataAttempt'), metadataLookupStatus:get('metadataLookupStatus')
     });
   }
   return result;
@@ -886,7 +894,7 @@ async function importAnime(items) {
           // Empty import values must never erase manually added poster/link.
           posterUrl: incoming.posterUrl || old.posterUrl || '',
           watchLink: incoming.watchLink || old.watchLink || '',
-          anilistId: incoming.anilistId || old.anilistId || null, malId:incoming.malId || old.malId || null, titleApi:incoming.titleApi || old.titleApi || '', description: incoming.description || old.description || '', descriptionRu:incoming.descriptionRu||old.descriptionRu||'',
+          anilistId: incoming.anilistId || old.anilistId || null, malId:incoming.malId || old.malId || null, shikimoriId:incoming.shikimoriId || old.shikimoriId || null, kitsuId:incoming.kitsuId || old.kitsuId || '', metadataProvider:incoming.metadataProvider || old.metadataProvider || '', titleApi:incoming.titleApi || old.titleApi || '', description: incoming.description || old.description || '', descriptionRu:incoming.descriptionRu||old.descriptionRu||'',
           totalEpisodes: incoming.totalEpisodes || old.totalEpisodes || null, episodeDuration: incoming.episodeDuration || old.episodeDuration || null,
           format: incoming.format || old.format || '', year: incoming.year || old.year || null, score: incoming.score || old.score || null, genres: incoming.genres || old.genres || [], apiPosterUrl:incoming.apiPosterUrl || old.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || old.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || old.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || old.metadataLookupStatus || ''
         };
@@ -901,7 +909,7 @@ async function importAnime(items) {
           titleRu:incoming.titleRu, titleOrig:incoming.titleOrig, titleAlt:incoming.titleAlt,
           status:incoming.status || 'В планах', favorite:incoming.favorite ? 1 : 0,
           currentEpisode:incoming.currentEpisode || 0, posterUrl:incoming.posterUrl || '',
-          watchLink:incoming.watchLink || '', anilistId:incoming.anilistId || null, malId:incoming.malId || null, titleApi:incoming.titleApi || '', description:incoming.description || '', descriptionRu:incoming.descriptionRu||'', totalEpisodes:incoming.totalEpisodes || null, episodeDuration:incoming.episodeDuration || null, format:incoming.format || '', year:incoming.year || null, score:incoming.score || null, genres:incoming.genres || [], apiPosterUrl:incoming.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || ''
+          watchLink:incoming.watchLink || '', anilistId:incoming.anilistId || null, malId:incoming.malId || null, shikimoriId:incoming.shikimoriId || null, kitsuId:incoming.kitsuId || '', metadataProvider:incoming.metadataProvider || '', titleApi:incoming.titleApi || '', description:incoming.description || '', descriptionRu:incoming.descriptionRu||'', totalEpisodes:incoming.totalEpisodes || null, episodeDuration:incoming.episodeDuration || null, format:incoming.format || '', year:incoming.year || null, score:incoming.score || null, genres:incoming.genres || [], apiPosterUrl:incoming.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || ''
         };
         const id=await db.anime.add(item);
         item.id=id; exact.set(duplicateKey(item),item); byRu.set(norm(item.titleRu),item);
@@ -939,11 +947,11 @@ function csvEscape(value) {
 async function handleCSVExport() {
   const items=await db.anime.toArray();
   if (!items.length) { showToast('Библиотека пуста', 'error'); return; }
-  const headers=['Русское название','Оригинальное название','Альтернативные названия','Добавлено в избранное','Статус просмотра','Текущая серия','Ссылка на просмотр','Ссылка на постер','AniList ID','MAL ID','Название API','Описание','Описание на русском','Всего серий','Длительность серии (мин)','Формат','Год','Оценка','Жанры','Постер API','Дата обновления API','Дата попытки поиска AniList','Статус поиска AniList'];
+  const headers=['Русское название','Оригинальное название','Альтернативные названия','Добавлено в избранное','Статус просмотра','Текущая серия','Ссылка на просмотр','Ссылка на постер','AniList ID','MAL ID','Shikimori ID','Kitsu ID','Источник API','Название API','Описание','Описание на русском','Всего серий','Длительность серии (мин)','Формат','Год','Оценка','Жанры','Постер API','Дата обновления API','Дата попытки поиска AniList','Статус поиска AniList'];
   const rows=[headers.join(';')];
   for (const x of items) rows.push([
     x.titleRu,x.titleOrig,x.titleAlt,Number(x.favorite)===1?'Добавлено':'Не добавлено',
-    normalizeStatus(x.status),x.currentEpisode||0,x.watchLink,x.posterUrl,x.anilistId||'',x.malId||'',x.titleApi||'',x.description||'',x.descriptionRu||'',x.totalEpisodes||'',x.episodeDuration||'',x.format||'',x.year||'',x.score||'',(x.genres||[]).join(', '),x.apiPosterUrl||'',x.metadataUpdatedAt||'',x.metadataLookupAttemptedAt||'',x.metadataLookupStatus||''
+    normalizeStatus(x.status),x.currentEpisode||0,x.watchLink,x.posterUrl,x.anilistId||'',x.malId||'',x.shikimoriId||'',x.kitsuId||'',x.metadataProvider||'',x.titleApi||'',x.description||'',x.descriptionRu||'',x.totalEpisodes||'',x.episodeDuration||'',x.format||'',x.year||'',x.score||'',(x.genres||[]).join(', '),x.apiPosterUrl||'',x.metadataUpdatedAt||'',x.metadataLookupAttemptedAt||'',x.metadataLookupStatus||''
   ].map(csvEscape).join(';'));
   const blob=new Blob(['\uFEFF'+rows.join('\r\n')],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);
