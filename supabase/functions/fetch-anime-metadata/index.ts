@@ -77,8 +77,10 @@ async function anilistRequest(query:string,variables:Record<string,unknown>={}) 
       }
       lastError=Object.assign(new Error(`AniList HTTP ${response.status}: ${text.slice(0,220)}`),{status:response.status,provider:"AniList"});
       if(response.status===404) {
-        anilistDisabledUntil=Date.now()+15*60*1000;
-        anilistDisabledReason=lastError.message;
+        if(endpoint===ANILIST_ENDPOINTS[ANILIST_ENDPOINTS.length-1]) {
+          anilistDisabledUntil=Date.now()+15*60*1000;
+          anilistDisabledReason=lastError.message;
+        }
         break;
       }
       if([408,425,429,500,502,503,504].includes(response.status)&&attempt<2) {
