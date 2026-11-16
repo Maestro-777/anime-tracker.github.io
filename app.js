@@ -1104,7 +1104,7 @@ async function disconnectGoogleDrive() {
 }
 async function fetchPosterFromSource(sourceUrl) {
   const {data:{session}}=await supabaseClient.auth.getSession();
-  if(!session?.access_token) throw new Error('Сначала войдите в AnimeVault через GitHub.');
+  if(!session?.access_token) throw new Error('Сначала войдите в аккаунт AnimeVault.');
   const response=await fetch(`${SUPABASE_URL}/functions/v1/fetch-poster`,{
     method:'POST',
     headers:{'Authorization':`Bearer ${session.access_token}`,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
@@ -1177,8 +1177,8 @@ function addPosterLog(entry){ posterLogEntries.push({...entry,time:new Date().to
 function posterFailureReason(error,stage){
   const msg=String(error?.message||error||'Неизвестная ошибка');
   if(stage==='Источник' && (error instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(msg))) return 'Браузер не смог прочитать изображение. Возможны CORS-ограничение источника, блокировка сети или недоступный сервер; точную причину браузер не раскрывает.';
-  if(/row.level security|permission|unauthorized|not authorized|403/i.test(msg)) return 'Supabase Storage отклонил доступ. Проверьте bucket и Storage policies для папки пользователя.';
-  if(/bucket.*not found|not found/i.test(msg)) return 'Bucket animevault-posters не найден. Выполните актуальный SUPABASE_SETUP.sql.';
+  if(/row.level security|permission|unauthorized|not authorized|403/i.test(msg)) return 'Google Drive или серверный прокси отклонил доступ. Переподключите Google Drive и проверьте вход в AnimeVault.';
+  if(/bucket.*not found|not found/i.test(msg)) return 'Постер не найден в выбранном источнике. Проверьте ссылку или повторите поиск через API.';
   return msg;
 }
 function cloudStatus(message, type='info') {
