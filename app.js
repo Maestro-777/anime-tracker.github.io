@@ -733,9 +733,15 @@ async function handleFormSubmit(event) {
   if (!data.posterUrl && existing?.posterUrl) data.posterUrl = existing.posterUrl;
   if (!data.watchLink && existing?.watchLink) data.watchLink = existing.watchLink;
   if (id) await db.anime.update(id, data);
-  else await db.anime.add(data);
+  else {
+    const key=duplicateKey(data);
+    const duplicate=(await db.anime.toArray()).find(item=>norm(item.titleRu)&&norm(item.titleOrig)&&duplicateKey(item)===key);
+    if(duplicate) await db.anime.update(duplicate.id,data);
+    else await db.anime.add(data);
+  }
+  await deduplicateLocalAnime();
   closeModal();
-  showToast(id ? 'Изменения сохранены' : 'Аниме добавлено');
+  showToast(id ? 'Изменения сохранены' : 'Аниме добавлено или обновлено');
   loadAnimeData();
 }
 
@@ -853,6 +859,73 @@ function duplicateKey(item) {
   const ru=norm(item.titleRu), orig=norm(item.titleOrig);
   return ru ? `${ru}|${orig}` : `|${orig}`;
 }
+function animeRecordRichness(item) {
+  return [
+    item.anilistId,item.malId,item.shikimoriId,item.kitsuId,
+    item.posterDriveFileId,item.posterUrl,item.apiPosterUrl,item.posterCloudUrl,
+    item.description,item.descriptionRu,item.watchLink,item.totalEpisodes,
+    item.format,item.year,item.score,Array.isArray(item.genres)&&item.genres.length
+  ].filter(Boolean).length;
+}
+function mergeAnimeRecords(records) {
+  const sorted=[...records].sort((a,b)=>
+    animeRecordRichness(b)-animeRecordRichness(a) ||
+    Date.parse(b.syncUpdatedAt||0)-Date.parse(a.syncUpdatedAt||0) ||
+    Number(a.id)-Number(b.id)
+  );
+  const keeper=sorted[0], latest=[...records].sort((a,b)=>Date.parse(b.syncUpdatedAt||0)-Date.parse(a.syncUpdatedAt||0))[0];
+  const merged={...keeper};
+  const fields=[
+    'titleRu','titleOrig','titleAlt','posterDriveFileId','posterUrl','apiPosterUrl','posterCloudUrl',
+    'watchLink','anilistId','malId','shikimoriId','kitsuId','metadataProvider','titleApi',
+    'description','descriptionRu','totalEpisodes','episodeDuration','format','year','score',
+    'genres','metadataUpdatedAt','metadataLookupAttemptedAt','metadataLookupStatus','metadataRetryAt',
+    'metadataLookupError','metadataLookupAttempts'
+  ];
+  for(const field of fields) {
+    const candidate=sorted.find(item=>item[field]!==undefined&&item[field]!==null&&item[field]!==''&&
+      !(Array.isArray(item[field])&&item[field].length===0));
+    if(candidate) merged[field]=candidate[field];
+  }
+  merged.status=latest.status||keeper.status||'В планах';
+  merged.favorite=records.some(item=>Number(item.favorite)===1)?1:0;
+  merged.currentEpisode=Math.max(0,...records.map(item=>Number(item.currentEpisode)||0));
+  merged.recordUuid=keeper.recordUuid;
+  merged.syncUpdatedAt=new Date().toISOString();
+  merged.syncDirty=1;
+  merged.posterPending=merged.posterDriveFileId?0:((merged.posterUrl||merged.apiPosterUrl)?1:0);
+  return {keeper,merged};
+}
+async function deduplicateLocalAnime() {
+  const rows=await db.anime.toArray(), groups=new Map();
+  for(const item of rows) {
+    const ru=norm(item.titleRu),orig=norm(item.titleOrig);
+    if(!ru||!orig) continue;
+    const key=duplicateKey(item);
+    if(!groups.has(key)) groups.set(key,[]);
+    groups.get(key).push(item);
+  }
+  let removed=0;
+  await db.transaction('rw',db.anime,db.sync_meta,async()=>{
+    for(const group of groups.values()) {
+      if(group.length<2) continue;
+      const fresh=[];
+      for(const item of group) {
+        const current=await db.anime.get(item.id);
+        if(current) fresh.push(current);
+      }
+      if(fresh.length<2) continue;
+      const {keeper,merged}=mergeAnimeRecords(fresh);
+      await db.anime.update(keeper.id,merged);
+      for(const item of fresh) if(item.id!==keeper.id) {
+        await db.anime.delete(item.id);
+        removed++;
+      }
+    }
+  });
+  if(removed) console.info(`AnimeVault: объединено ${removed} локальных дублей.`);
+  return removed;
+}
 async function importAnime(items) {
   let added=0, updated=0, skipped=0;
   await db.transaction('rw', db.anime, async () => {
@@ -866,8 +939,9 @@ async function importAnime(items) {
     }
     for (const incoming of items) {
       const key=duplicateKey(incoming);
-      let old=exact.get(key) || (norm(incoming.titleRu) ? byRu.get(norm(incoming.titleRu)) : null);
-      if (!old && norm(incoming.titleOrig)) old=byOrig.get(norm(incoming.titleOrig));
+      let old=exact.get(key);
+      if (!old && norm(incoming.titleRu) && !norm(incoming.titleOrig)) old=byRu.get(norm(incoming.titleRu));
+      if (!old && !norm(incoming.titleRu) && norm(incoming.titleOrig)) old=byOrig.get(norm(incoming.titleOrig));
       if (old) {
         const patch = {
           titleRu: incoming.titleRu || old.titleRu,
@@ -903,6 +977,7 @@ async function importAnime(items) {
       }
     }
   });
+  await deduplicateLocalAnime();
   return {added,updated,skipped};
 }
 async function handleCSVImport(event) {
@@ -1615,6 +1690,7 @@ async function init() {
   try {
     await db.open();
     await importBundledLibraryIfNeeded();
+    await deduplicateLocalAnime();
     await loadAnimeData();
     await initCloudAuth();
     loadAniListGenreCollection();
@@ -1626,6 +1702,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.4.4 · Исправление переноса постеров';
+  $('app-version').textContent='v1.4.5 · Объединение дублей библиотеки';
 }
 document.addEventListener('DOMContentLoaded',init);
