@@ -322,41 +322,34 @@ function updatePosterPreview() {
   const url = safeURL(els.poster.value);
   els.posterPreview.src = url || 'icon-512.png';
 }
-const ANILIST_ENDPOINT = 'https://graphql.anilist.co';
-const ANILIST_FIELDS = 'id idMal title { romaji english native } description(asHtml: false) episodes duration format seasonYear averageScore genres coverImage { extraLarge large medium }';
-async function fetchAnimeMetadataBatch(titles) {
-  const unique=[...new Set((titles||[]).map(x=>String(x||'').trim()).filter(Boolean))].slice(0,10);
-  const result=new Map(); if(!unique.length) return result;
-  const variables={}, declarations=[], fields=[];
-  unique.forEach((title,i)=>{variables[`s${i}`]=title;declarations.push(`$s${i}: String`);fields.push(`m${i}: Media(search:$s${i},type:ANIME){${ANILIST_FIELDS}}`);});
-  const query=`query (${declarations.join(',')}){${fields.join(' ')}}`;
-  let response,lastError;
-  for(let attempt=0;attempt<3;attempt++) {
-    const controller=new AbortController(),timeoutId=setTimeout(()=>controller.abort(),25000);
-    try {
-      response=await fetch(ANILIST_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({query,variables}),signal:controller.signal});
-    } catch(err) {
-      lastError=err;
-      if(attempt===2) throw err;
-      await new Promise(resolve=>setTimeout(resolve,900*2**attempt+Math.random()*400));
-      continue;
-    } finally { clearTimeout(timeoutId); }
-    if(response.ok) break;
-    const reset=Number(response.headers.get('X-RateLimit-Reset')||0);
-    const retryable=[404,408,425,429,500,502,503,504].includes(response.status);
-    const wait=reset>0?Math.min(30000,Math.max(1000,reset*1000-Date.now()+1200)):Math.min(30000,1200*2**attempt);
-    const error=new Error(`AniList HTTP ${response.status}`);error.retryAfter=wait;error.status=response.status;lastError=error;
-    if(!retryable||attempt===2) throw error;
-    await new Promise(resolve=>setTimeout(resolve,wait+Math.random()*350));
-  }
-  if(!response?.ok) throw lastError||new Error('AniList request failed');
-  const json=await response.json();
-  if(json?.errors?.length) throw new Error(String(json.errors[0]?.message||'AniList GraphQL error'));
-  const clean=value=>String(value||'').replace(/<br\s*\/?\s*>/gi,' ').replace(/<[^>]*>/g,'').replace(/&amp;/g,'&').replace(/&#039;/g,"'").replace(/&quot;/g,'"').trim();
-  unique.forEach((title,i)=>{
-    const m=json?.data?.[`m${i}`]; if(!m?.id) return;
-    result.set(title,{anilistId:m.id,malId:m.idMal||null,titleApi:m.title?.english||m.title?.romaji||m.title?.native||'',description:clean(m.description).slice(0,2500),totalEpisodes:m.episodes||null,episodeDuration:m.duration||null,format:m.format||'',year:m.seasonYear||null,score:m.averageScore||null,genres:Array.isArray(m.genres)?m.genres:[],apiPosterUrl:m.coverImage?.extraLarge||m.coverImage?.large||m.coverImage?.medium||''});
+async function callAniListProxy(payload) {
+  if(!supabaseClient) throw new Error('Supabase SDK недоступен: не удалось подключиться к прокси AniList.');
+  const {data:{session}}=await supabaseClient.auth.getSession();
+  if(!session?.access_token) throw new Error('Войдите в AnimeVault через Supabase, чтобы получать данные AniList.');
+  const response=await fetch(`${SUPABASE_URL}/functions/v1/fetch-anime-metadata`,{
+    method:'POST',
+    headers:{'Authorization':`Bearer ${session.access_token}`,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
   });
+  const raw=await response.text();
+  let data={};
+  try { data=raw?JSON.parse(raw):{}; } catch {}
+  if(!response.ok) {
+    const error=new Error(data?.error||`Прокси AniList HTTP ${response.status}: ${raw.slice(0,160)}`);
+    error.status=response.status;
+    const retryAfter=Number(response.headers.get('Retry-After')||0);
+    if(retryAfter) error.retryAfter=retryAfter*1000;
+    throw error;
+  }
+  return data;
+}
+async function fetchAnimeMetadataBatch(titles) {
+  const unique=[...new Set((titles||[]).map(x=>String(x||'').trim()).filter(Boolean))].slice(0,9);
+  const result=new Map(); if(!unique.length) return result;
+  const payload=await callAniListProxy({action:'metadata',titles:unique});
+  for(const row of (Array.isArray(payload?.results)?payload.results:[])) {
+    if(row?.searchTitle&&row?.metadata?.anilistId) result.set(row.searchTitle,row.metadata);
+  }
   return result;
 }
 async function fetchAnimeMetadata(title) {
@@ -584,11 +577,8 @@ async function loadAniListGenreCollection() {
     }
   } catch {}
   try {
-    const query='query { GenreCollection }';
-    const response=await fetch(ANILIST_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({query})});
-    if(!response.ok) throw new Error(`AniList HTTP ${response.status}`);
-    const json=await response.json();
-    const genres=Array.isArray(json?.data?.GenreCollection)?json.data.GenreCollection.filter(Boolean):[];
+    const payload=await callAniListProxy({action:'genres'});
+    const genres=Array.isArray(payload?.genres)?payload.genres.filter(Boolean):[];
     if(genres.length) {
       window.animeVaultApiGenres=genres;
       localStorage.setItem(cacheKey,JSON.stringify({genres,savedAt:Date.now()}));
