@@ -581,7 +581,7 @@ async function enrichLibrary() {
         } else result=await enrichOne(item,metadataMap);
         done++;
         if(result==='ok'){found++;addEnrichmentLog(`✓ Обработано: ${item.titleRu||item.titleOrig}`,'success');}
-        else if(result==='miss'){missed++;addEnrichmentLog(`— Не найдено в AniList: ${item.titleRu||item.titleOrig}`,'muted');}
+        else if(result==='miss'){missed++;addEnrichmentLog(`— Не найдено в каталогах API: ${item.titleRu||item.titleOrig}`,'muted');}
         else if(result==='no_title'){missed++;addEnrichmentLog(`Пропуск записи без названия (ID ${item.id}).`,'muted');}
         else {errors++;const failed=await db.anime.get(item.id);addEnrichmentLog(`Ошибка: ${item.titleRu||item.titleOrig} — ${failed?.metadataLookupError||failed?.descriptionRuError||'временная ошибка API'}`,'error');}
         $('enrich-done').textContent=done.toLocaleString('ru-RU');
