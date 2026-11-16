@@ -1276,6 +1276,7 @@ async function syncCloudNow() {
     const staleDeletes=pendingDeletes.filter(x=>Date.parse(remote.get(x.value.recordUuid)?.updated_at||0)>Date.parse(x.value.deletedAt||0));
     if(staleDeletes.length) await db.sync_meta.bulkDelete(staleDeletes.map(x=>x.key));
     const effectiveDeletes=pendingDeletes.filter(x=>!staleDeletes.includes(x));
+    const locallyDeletedIds=new Set(effectiveDeletes.map(x=>x.value.recordUuid));
     if(effectiveDeletes.length) {
       const deleteRows=effectiveDeletes.map(x=>({owner_id:cloudUser.id,record_id:x.value.recordUuid,payload:{},updated_at:x.value.deletedAt,deleted:true}));
       await retryCloudRequest(()=>supabaseClient.from('animevault_records').upsert(deleteRows,{onConflict:'owner_id,record_id'}));
@@ -1284,6 +1285,7 @@ async function syncCloudNow() {
     }
     let pulled=0;
     for(const row of remoteRows) {
+      if(locallyDeletedIds.has(row.record_id)) continue;
       const item=await db.anime.where('recordUuid').equals(row.record_id).first();
       if(!item) {
         if(!row.deleted&&row.payload&&typeof row.payload==='object') {
@@ -1295,7 +1297,8 @@ async function syncCloudNow() {
         }
         continue;
       }
-      if(Date.parse(row.updated_at||0)>(row.deleted?Date.parse(item.syncUpdatedAt||0)-1:Date.parse(item.syncUpdatedAt||0))) {
+      const remoteUpdated=Date.parse(row.updated_at||0),localUpdated=Date.parse(item.syncUpdatedAt||0);
+      if(row.deleted?remoteUpdated>=localUpdated:remoteUpdated>localUpdated) {
         applyingCloudData=true;
         try {
           if(row.deleted){await db.anime.delete(item.id);}
