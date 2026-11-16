@@ -1705,7 +1705,7 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.5.0 · Встроенный видеоплеер';
+  $('app-version').textContent='v1.6.0 · Автопоиск серий AniLiberty';
 }
 
 let playerAnimeId=null, playerHls=null, playerLastSavedAt=0, playerActiveSource=null;
