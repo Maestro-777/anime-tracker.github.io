@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v138-card-queue-retry';
+const CACHE_NAME = 'animevault-shell-v139-anilist-supabase-proxy';
 const APP_SHELL = [
   './',
   './index.html',
