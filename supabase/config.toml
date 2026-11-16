@@ -1,2 +1,5 @@
 [functions.fetch-poster]
 verify_jwt = true
+
+[functions.fetch-anime-description]
+verify_jwt = true
