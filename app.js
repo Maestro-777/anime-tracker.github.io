@@ -1009,8 +1009,8 @@ async function findDrivePoster(name,folderId) {
   const data=await (await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&pageSize=10&fields=files(id,name,mimeType,size)`)).json();
   return data.files?.[0]||null;
 }
-async function uploadBlobToDrive(blob,name,mimeType,folderId) {
-  const existing=await findDrivePoster(name,folderId), fields='id,name,mimeType,size';
+async function uploadBlobToDrive(blob,name,mimeType,folderId,existingFileId=null) {
+  const existing=existingFileId?{id:existingFileId}:await findDrivePoster(name,folderId), fields='id,name,mimeType,size';
   if(existing?.id) {
     return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existing.id)}?uploadType=media&fields=${fields}`,{method:'PATCH',headers:{'Content-Type':mimeType},body:blob})).json();
   }
@@ -1135,7 +1135,7 @@ async function ensureLocalCloudIds() {
 }
 async function uploadPosterToCloud(item) {
   const sourceUrl=safeURL(item?.posterUrl||item?.apiPosterUrl);
-  if(!(item?.posterUrl||item?.apiPosterUrl)||item.posterDriveFileId||!item.recordUuid) return {status:'skip'};
+  if(!(item?.posterUrl||item?.apiPosterUrl)||(item.posterDriveFileId&&Number(item.posterPending)!==1)||!item.recordUuid) return {status:'skip'};
   let stage='Источник',blob=null;
   try {
     if(!driveAccessToken) throw new Error('Google Drive не подключён.');
@@ -1150,7 +1150,7 @@ async function uploadPosterToCloud(item) {
     const name=`${item.recordUuid}.${ext}`;
     stage='Google Drive';
     const folderId=await ensureGoogleDriveFolder();
-    const driveFile=await uploadBlobToDrive(blob,name,type,folderId);
+    const driveFile=await uploadBlobToDrive(blob,name,type,folderId,item.posterDriveFileId||null);
     if(!driveFile?.id) throw new Error('Google Drive не вернул ID загруженного файла.');
     stage='Сохранение идентификатора';
     await db.anime.update(item.id,{posterDriveFileId:driveFile.id,posterDriveFileName:driveFile.name||name,posterDriveMimeType:driveFile.mimeType||type,posterDriveUpdatedAt:new Date().toISOString(),posterPending:0});
@@ -1182,7 +1182,7 @@ async function uploadLibraryPosters() {
   const pending=await db.anime.where('posterPending').equals(1).toArray();
   const queue=[];
   for(const item of pending) {
-    if(!item.posterDriveFileId&&(item.posterUrl||item.apiPosterUrl)) queue.push(item);
+    if(item.posterUrl||item.apiPosterUrl) queue.push(item);
     else {
       applyingCloudData=true;
       try { await db.anime.update(item.id,{posterPending:0}); }
