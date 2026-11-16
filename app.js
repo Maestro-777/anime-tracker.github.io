@@ -33,10 +33,13 @@ db.version(9).stores({
   sync_meta: '&key',
   poster_cache: '&fileId, recordUuid, cachedAt'
 }).upgrade(async tx => {
-  await tx.table('anime').toCollection().modify(item => {
-    item.syncDirty = Number(item.syncDirty) === 1 ? 1 : 0;
-    item.posterPending = Number(item.posterPending) === 1 ? 1 : 0;
-  });
+  applyingCloudData = true;
+  try {
+    await tx.table('anime').toCollection().modify(item => {
+      item.syncDirty = Number(item.syncDirty) === 1 ? 1 : 0;
+      item.posterPending = Number(item.posterPending) === 1 ? 1 : 0;
+    });
+  } finally { applyingCloudData = false; }
 });
 
 let applyingCloudData = false;
