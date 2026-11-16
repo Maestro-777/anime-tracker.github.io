@@ -465,7 +465,8 @@ async function enrichOne(item, metadataMap=null) {
       metadataLookupAttemptedAt:performedLookup?checkedAt:(item.metadataLookupAttemptedAt||''),
       metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+(performedLookup?1:0),
       metadataRetryAt:lookupFound?null:(performedLookup?nextNoMatchRetry:(item.metadataRetryAt||nextNoMatchRetry)),
-      metadataLookupStatus:lookupFound?'found':'not_found'
+      metadataLookupStatus:lookupFound?'found':'not_found',
+      metadataLookupError:''
     };
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
@@ -475,6 +476,7 @@ async function enrichOne(item, metadataMap=null) {
       patch.descriptionRuStatus='found';
       patch.descriptionRuUpdatedAt=new Date().toISOString();
       patch.descriptionRuRetryAt=null;
+      patch.descriptionRuError='';
     }
     if(!patch.descriptionRu && (!item.descriptionRu || item.descriptionRuStatus==='error')) {
       try {
@@ -485,7 +487,8 @@ async function enrichOne(item, metadataMap=null) {
           patch.descriptionRuStatus='found';
           patch.descriptionRuUpdatedAt=new Date().toISOString();
           patch.descriptionRuRetryAt=null;
-        } else { patch.descriptionRuStatus='not_found'; patch.descriptionRuRetryAt=null; }
+          patch.descriptionRuError='';
+        } else { patch.descriptionRuStatus='not_found'; patch.descriptionRuRetryAt=null; patch.descriptionRuError=''; }
       } catch(err) {
         const attempts=(Number(item.descriptionRuAttempts)||0)+1;
         patch.descriptionRuStatus='error';
