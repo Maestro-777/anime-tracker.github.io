@@ -1816,14 +1816,19 @@ async function choosePlayerCatalogRelease(release){
   const voiceNames=Array.isArray(detail?.members)?detail.members.filter(m=>/voice|озвуч/i.test(String(m?.role?.value||m?.role?.description||m?.role||''))).map(m=>m?.nickname||m?.name).filter(Boolean):[];
   const voice='AniLiberty'+(voiceNames.length?' · '+voiceNames.slice(0,3).join(', '):'');
   const sources=[];
-  for(const ep of episodes.slice(0,300)){
-   const epNo=Number(ep?.ordinal??ep?.number??ep?.sort_order);
-   if(!Number.isFinite(epNo)||epNo<=0||!ep?.id)continue;
-   try{
-    const episode=await anilibertyRequest('/anime/releases/episodes/'+encodeURIComponent(String(ep.id)));
-    const links=[['1080p',episode?.hls_1080],['720p',episode?.hls_720],['480p',episode?.hls_480]].filter(x=>safeURL(x[1]));
-    for(const [quality,url] of links)sources.push({episode:epNo,voice,url:safeURL(url),type:'hls',quality,label:'AniLiberty · '+quality,provider:'AniLiberty',providerReleaseId:String(id),providerReleaseAlias:detail?.alias||release?.alias||''});
-   }catch(error){console.warn('AniLiberty episode unavailable:',epNo,error);}
+  const episodeRows=episodes.slice(0,100).filter(ep=>Number.isFinite(Number(ep?.ordinal??ep?.number??ep?.sort_order))&&Number(ep?.ordinal??ep?.number??ep?.sort_order)>0&&ep?.id);
+  for(let offset=0;offset<episodeRows.length;offset+=5){
+   const batch=episodeRows.slice(offset,offset+5);
+   const resolved=await Promise.all(batch.map(async ep=>{
+    const epNo=Number(ep?.ordinal??ep?.number??ep?.sort_order);
+    try{return {epNo,data:await anilibertyRequest('/anime/releases/episodes/'+encodeURIComponent(String(ep.id)))};}
+    catch(error){console.warn('AniLiberty episode unavailable:',epNo,error);return {epNo,data:null};}
+   }));
+   for(const row of resolved){
+    if(!row.data)continue;
+    const links=[['1080p',row.data?.hls_1080],['720p',row.data?.hls_720],['480p',row.data?.hls_480]].filter(x=>safeURL(x[1]));
+    for(const [quality,url] of links)sources.push({episode:row.epNo,voice,url:safeURL(url),type:'hls',quality,label:'AniLiberty · '+quality,provider:'AniLiberty',providerReleaseId:String(id),providerReleaseAlias:detail?.alias||release?.alias||''});
+   }
   }
   if(!sources.length)throw new Error('Релиз найден, но API не предоставил доступные HLS-потоки для серий.');
   const item=await db.anime.get(playerAnimeId);if(!item)return;
