@@ -1712,6 +1712,7 @@ let playerAnimeId=null, playerHls=null, playerLastSavedAt=0, playerActiveSource=
 function playerSourcesFor(item,episode){return (Array.isArray(item&&item.playerSources)?item.playerSources:[]).map((s,i)=>({...s,_index:i})).filter(s=>Number(s.episode)===Number(episode)&&safeURL(s.url));}
 function playerEpisodes(item){return [...new Set((item.playerSources||[]).map(s=>Number(s.episode)).filter(n=>Number.isInteger(n)&&n>0))].sort((a,b)=>a-b);}
 async function openPlayer(id){
+ await savePlayerProgress(true);playerActiveSource=null;
  const item=await db.anime.get(Number(id));if(!item)return;playerAnimeId=Number(id);
  $('player-title').textContent=item.titleRu||'Просмотр аниме';$('player-subtitle').textContent=item.titleOrig||'';
  $('player-modal').classList.add('is-open');$('player-modal').setAttribute('aria-hidden','false');
@@ -1744,7 +1745,7 @@ async function loadPlayerSource(index){
  }else{video.src=url;video.addEventListener('loadedmetadata',restore,{once:true});}
 }
 async function savePlayerProgress(force){const v=$('player-video');if(!playerAnimeId||!v||!Number.isFinite(v.currentTime)||!playerActiveSource||(!force&&Date.now()-playerLastSavedAt<30000))return;playerLastSavedAt=Date.now();const item=await db.anime.get(playerAnimeId);if(!item)return;const progress={...(item.playerProgress||{}),[playerActiveSource.episode]:Math.floor(v.currentTime)};await db.anime.update(playerAnimeId,{playerProgress:progress});}
-async function closePlayer(){await savePlayerProgress(true);if(playerHls){playerHls.destroy();playerHls=null;}const v=$('player-video');v.pause();v.removeAttribute('src');v.load();$('player-modal').classList.remove('is-open');$('player-modal').setAttribute('aria-hidden','true');}
+async function closePlayer(){await savePlayerProgress(true);playerActiveSource=null;if(playerHls){playerHls.destroy();playerHls=null;}const v=$('player-video');v.pause();v.removeAttribute('src');v.load();$('player-modal').classList.remove('is-open');$('player-modal').setAttribute('aria-hidden','true');}
 async function addPlayerSource(e){
  e.preventDefault();const episode=Math.max(1,Number($('player-add-episode').value)||1),voice=$('player-add-voice').value.trim()||'Оригинал',url=safeURL($('player-add-url').value);
  if(!url){showToast('Укажите корректную ссылку HTTP(S).','error');return;}const type=$('player-add-type').value,quality=$('player-add-quality').value.trim(),label=$('player-add-label').value.trim()||quality||type.toUpperCase()+' источник';
