@@ -3,6 +3,8 @@ const ANILIST_ENDPOINTS = ["https://graphql.anilist.co","https://graphql.anilist
 const SHIKIMORI_API = "https://shikimori.one/api";
 const KITSU_API = "https://kitsu.io/api/edge";
 const USER_AGENT = "AnimeVault/2.0 (https://github.com/Maestro-777/anime-tracker.github.io)";
+let anilistDisabledUntil=0;
+let anilistDisabledReason="";
 const FIELDS = "id idMal title { romaji english native } description(asHtml: false) episodes duration format seasonYear averageScore genres coverImage { extraLarge large medium }";
 const sleep = (ms:number) => new Promise(resolve => setTimeout(resolve, ms));
 function corsHeaders(origin:string|null) {
@@ -55,6 +57,7 @@ async function readResponse(response:Response) {
   return {text,data};
 }
 async function anilistRequest(query:string,variables:Record<string,unknown>={}) {
+  if(Date.now()<anilistDisabledUntil) throw Object.assign(new Error(`AniList временно отключён после ошибки: ${anilistDisabledReason}`),{status:404,provider:"AniList"});
   let lastError:any=null;
   for(const endpoint of ANILIST_ENDPOINTS) {
     for(let attempt=0;attempt<3;attempt++) {
@@ -73,7 +76,11 @@ async function anilistRequest(query:string,variables:Record<string,unknown>={}) 
         return payload;
       }
       lastError=Object.assign(new Error(`AniList HTTP ${response.status}: ${text.slice(0,220)}`),{status:response.status,provider:"AniList"});
-      if(response.status===404)break;
+      if(response.status===404) {
+        anilistDisabledUntil=Date.now()+15*60*1000;
+        anilistDisabledReason=lastError.message;
+        break;
+      }
       if([408,425,429,500,502,503,504].includes(response.status)&&attempt<2) {
         const reset=Number(response.headers.get("X-RateLimit-Reset")||0);
         const retryAfter=Number(response.headers.get("Retry-After")||0);
@@ -173,10 +180,13 @@ Deno.serve(async(request:Request)=>{
       providerState.AniList={ok:false,status,error:error instanceof Error?error.message:String(error)};
       console.warn("AniList unavailable; trying alternate providers:",providerState.AniList.error);
     }
+    let fallbackRequests=0;
+    const paceFallback=async()=>{if(fallbackRequests++>0)await sleep(230);};
     for(const title of titles) {
       if(results.has(title))continue;
       let anyProviderHealthy=false;const errors:string[]=[];
       try {
+        await paceFallback();
         const metadata=await searchShikimori(title);anyProviderHealthy=true;
         providerState.Shikimori={ok:true,status:200};
         if(metadata){results.set(title,{searchTitle:title,metadata,status:"found"});continue;}
@@ -184,8 +194,8 @@ Deno.serve(async(request:Request)=>{
         const message=error instanceof Error?error.message:String(error);errors.push(message);
         providerState.Shikimori={ok:false,status:Number((error as any)?.status)||0,error:message};
       }
-      await sleep(220);
       try {
+        await paceFallback();
         const metadata=await searchKitsu(title);anyProviderHealthy=true;
         providerState.Kitsu={ok:true,status:200};
         if(metadata){results.set(title,{searchTitle:title,metadata,status:"found"});continue;}
