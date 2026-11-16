@@ -1,4 +1,4 @@
--- AnimeVault v1.3.3 — secure per-user cloud storage
+-- AnimeVault v1.4.0 — secure per-user cloud sync (Google Drive poster files)
 -- Run once in Supabase Dashboard -> SQL Editor -> New query.
 
 create table if not exists public.animevault_records (
