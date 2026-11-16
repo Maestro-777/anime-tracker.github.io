@@ -841,7 +841,7 @@ function setupInstallPrompt() {
 /* Supabase cloud sync — IndexedDB remains the offline-first local source. */
 const SUPABASE_URL = 'https://ytmnsnvxjhpejidcndyw.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_qDspg8-HRV2VeewVPVKK8w_uZ8sJhpR';
-const supabase = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
 });
 let cloudUser = null, syncBusy = false, syncTimer = null;
@@ -862,14 +862,14 @@ function setCloudSignedIn(user) {
 }
 async function cloudSignIn(event) {
   event.preventDefault();
-  if(!supabase) return cloudStatus('Не загрузилась библиотека Supabase. Проверьте интернет и обновите страницу.','error');
+  if(!supabaseClient) return cloudStatus('Не загрузилась библиотека Supabase. Проверьте интернет и обновите страницу.','error');
   const email=$('cloud-email').value.trim(), password=$('cloud-password').value;
   const mode=$('cloud-auth-mode').value;
   $('cloud-submit').disabled=true;
   try {
     const result=mode==='signup'
-      ? await supabase.auth.signUp({email,password})
-      : await supabase.auth.signInWithPassword({email,password});
+      ? await supabaseClient.auth.signUp({email,password})
+      : await supabaseClient.auth.signInWithPassword({email,password});
     if(result.error) throw result.error;
     if(mode==='signup' && !result.data.session) cloudStatus('Аккаунт создан. Подтвердите email по письму Supabase, затем войдите.','success');
     else { setCloudSignedIn(result.data.user); await syncCloudNow(); }
@@ -877,8 +877,8 @@ async function cloudSignIn(event) {
   finally { $('cloud-submit').disabled=false; }
 }
 async function cloudSignOut() {
-  if(!supabase) return;
-  try { await supabase.auth.signOut(); setCloudSignedIn(null); cloudStatus('Вы вышли. Локальная библиотека сохранена.','success'); }
+  if(!supabaseClient) return;
+  try { await supabaseClient.auth.signOut(); setCloudSignedIn(null); cloudStatus('Вы вышли. Локальная библиотека сохранена.','success'); }
   catch(err) { cloudStatus(err.message || 'Не удалось выйти.','error'); }
 }
 async function ensureLocalCloudIds() {
@@ -889,7 +889,7 @@ async function ensureLocalCloudIds() {
   }
 }
 async function syncCloudNow() {
-  if(!supabase || !cloudUser || syncBusy || !navigator.onLine) {
+  if(!supabaseClient || !cloudUser || syncBusy || !navigator.onLine) {
     if(!navigator.onLine) cloudStatus('Нет подключения к интернету. Локальная библиотека доступна.','error');
     return;
   }
@@ -898,7 +898,7 @@ async function syncCloudNow() {
     await ensureLocalCloudIds();
     let remoteRows=[];
     for(let offset=0;;offset+=1000) {
-      const {data,error}=await supabase.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).range(offset,offset+999);
+      const {data,error}=await supabaseClient.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).range(offset,offset+999);
       if(error) throw error;
       remoteRows.push(...(data||[]));
       if(!data || data.length<1000) break;
@@ -912,7 +912,7 @@ async function syncCloudNow() {
     const effectiveDeletes=pendingDeletes.filter(x=>!staleDeletes.includes(x));
     const deleteRows=effectiveDeletes.map(x=>({owner_id:cloudUser.id,record_id:x.value.recordUuid,payload:{},updated_at:x.value.deletedAt,deleted:true}));
     if(deleteRows.length) {
-      const {error}=await supabase.from('animevault_records').upsert(deleteRows,{onConflict:'owner_id,record_id'});
+      const {error}=await supabaseClient.from('animevault_records').upsert(deleteRows,{onConflict:'owner_id,record_id'});
       if(error) throw error;
       await db.sync_meta.bulkDelete(effectiveDeletes.map(x=>x.key));
       for(const tombstone of effectiveDeletes) {
@@ -955,7 +955,7 @@ async function syncCloudNow() {
       }
     }
     for(let i=0;i<upserts.length;i+=100) {
-      const {error}=await supabase.from('animevault_records').upsert(upserts.slice(i,i+100),{onConflict:'owner_id,record_id'});
+      const {error}=await supabaseClient.from('animevault_records').upsert(upserts.slice(i,i+100),{onConflict:'owner_id,record_id'});
       if(error) throw error; pushed+=Math.min(100,upserts.length-i);
     }
     cloudStatus(`Синхронизировано. Получено: ${pulled}, отправлено: ${pushed}.`,'success');
@@ -968,14 +968,14 @@ async function syncCloudNow() {
   } finally { syncBusy=false; $('cloud-sync-now').disabled=false; }
 }
 async function initCloudAuth() {
-  if(!supabase) { cloudStatus('Не удалось загрузить Supabase SDK.','error'); return; }
+  if(!supabaseClient) { cloudStatus('Не удалось загрузить Supabase SDK.','error'); return; }
   $('cloud-auth-form').addEventListener('submit',cloudSignIn);
   $('cloud-auth-mode').addEventListener('change',e=>{$('cloud-submit').textContent=e.target.value==='signup'?'Создать аккаунт':'Войти';});
   $('cloud-signout').addEventListener('click',cloudSignOut);
   $('cloud-sync-now').addEventListener('click',syncCloudNow);
-  const {data:{session}}=await supabase.auth.getSession();
+  const {data:{session}}=await supabaseClient.auth.getSession();
   setCloudSignedIn(session?.user || null);
-  supabase.auth.onAuthStateChange((_event,nextSession)=>{
+  supabaseClient.auth.onAuthStateChange((_event,nextSession)=>{
     setCloudSignedIn(nextSession?.user || null);
     if(nextSession?.user) setTimeout(()=>syncCloudNow(),0);
   });
