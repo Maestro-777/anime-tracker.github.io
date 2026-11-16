@@ -846,6 +846,27 @@ const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBL
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
 });
 let cloudUser = null, syncBusy = false, syncTimer = null;
+const POSTER_LOG_KEY='animevault-poster-log-v1';
+let posterLogEntries=[];
+try { posterLogEntries=JSON.parse(localStorage.getItem(POSTER_LOG_KEY)||'[]'); if(!Array.isArray(posterLogEntries)) posterLogEntries=[]; } catch { posterLogEntries=[]; }
+function renderPosterLog(){
+  const list=$('poster-log-list'), summary=$('poster-log-summary'); if(!list||!summary) return;
+  const failed=posterLogEntries.filter(x=>x.level==='error').length;
+  summary.textContent=`Записей в журнале: ${posterLogEntries.length}. Ошибок: ${failed}. Журнал хранится на этом устройстве.`;
+  list.innerHTML=posterLogEntries.slice().reverse().map(x=>{
+    const wrap=document.createElement('div'); wrap.style.cssText='padding:9px;border:1px solid #303036;border-radius:8px;background:#141418';
+    const head=document.createElement('div'); head.style.cssText='font-size:12px;font-weight:700;color:'+(x.level==='error'?'#ff7777':'#86d6a0'); head.textContent=`${x.level==='error'?'ОШИБКА':'ГОТОВО'} · ${x.title||'Без названия'} · ${x.time}`; wrap.append(head);
+    const body=document.createElement('div'); body.style.cssText='font-size:11px;color:#c4c4cc;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:5px'; body.textContent=[`Этап: ${x.stage||'—'}`,`Причина: ${x.reason||'—'}`,x.http?`HTTP: ${x.http}`:'',x.size?`Размер: ${x.size}`:'',x.url?`Источник: ${x.url}`:''].filter(Boolean).join('\n'); wrap.append(body); return wrap.outerHTML;
+  }).join('');
+}
+function addPosterLog(entry){ posterLogEntries.push({...entry,time:new Date().toLocaleString('ru-RU')}); if(posterLogEntries.length>250) posterLogEntries=posterLogEntries.slice(-250); try{localStorage.setItem(POSTER_LOG_KEY,JSON.stringify(posterLogEntries));}catch{} renderPosterLog(); }
+function posterFailureReason(error,stage){
+  const msg=String(error?.message||error||'Неизвестная ошибка');
+  if(stage==='Источник' && (error instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(msg))) return 'Браузер не смог прочитать изображение. Возможны CORS-ограничение источника, блокировка сети или недоступный сервер; точную причину браузер не раскрывает.';
+  if(/row.level security|permission|unauthorized|not authorized|403/i.test(msg)) return 'Supabase Storage отклонил доступ. Проверьте bucket и Storage policies для папки пользователя.';
+  if(/bucket.*not found|not found/i.test(msg)) return 'Bucket animevault-posters не найден. Выполните актуальный SUPABASE_SETUP.sql.';
+  return msg;
+}
 function cloudStatus(message, type='info') {
   const el=$('cloud-status'); if(!el) return;
   el.textContent=message; el.dataset.type=type;
@@ -906,38 +927,47 @@ async function ensureLocalCloudIds() {
   }
 }
 async function uploadPosterToCloud(item) {
+  const sourceUrl=safeURL(item?.posterUrl || item?.apiPosterUrl);
   if (!(item?.posterUrl || item?.apiPosterUrl) || item.posterCloudUrl || !item.recordUuid) return {status:'skip'};
-  const sourceUrl=safeURL(item.posterUrl || item.apiPosterUrl);
-  if(!sourceUrl) return {status:'skip'};
+  let stage='Источник', response=null, blob=null;
   try {
-    const response=await fetch(sourceUrl,{mode:'cors',credentials:'omit',cache:'force-cache'});
-    if(!response.ok) throw new Error(`HTTP ${response.status}`);
-    const blob=await response.blob();
+    if(!sourceUrl) throw new Error('URL постера пустой или не прошёл проверку безопасности');
+    response=await fetch(sourceUrl,{mode:'cors',credentials:'omit',cache:'force-cache'});
+    if(!response.ok) throw Object.assign(new Error(`Сервер источника ответил HTTP ${response.status} ${response.statusText||''}`.trim()),{http:response.status});
+    blob=await response.blob();
     const type=(blob.type||'').toLowerCase();
-    if(!type.startsWith('image/')) throw new Error('Источник вернул не изображение');
-    if(blob.size>10*1024*1024) throw new Error('Изображение больше 10 МБ');
+    if(!type.startsWith('image/')) throw new Error(`Ответ не является изображением (Content-Type: ${type||'не указан'})`);
+    if(blob.size>10*1024*1024) throw new Error(`Файл ${ (blob.size/1024/1024).toFixed(2) } МБ превышает лимит 10 МБ`);
     const ext=type.includes('png')?'png':type.includes('webp')?'webp':type.includes('gif')?'gif':type.includes('avif')?'avif':'jpg';
     const path=`${cloudUser.id}/${item.recordUuid}.${ext}`;
+    stage='Supabase Storage';
     const {error}=await supabaseClient.storage.from(POSTER_BUCKET).upload(path,blob,{contentType:type,cacheControl:'31536000',upsert:true});
     if(error) throw error;
     const {data}=supabaseClient.storage.from(POSTER_BUCKET).getPublicUrl(path);
-    if(!data?.publicUrl) throw new Error('Не удалось получить публичную ссылку');
+    if(!data?.publicUrl) throw new Error('Supabase не вернул публичную ссылку на загруженный файл');
+    stage='Сохранение ссылки';
     await db.anime.update(item.id,{posterStoragePath:path,posterCloudUrl:data.publicUrl});
+    addPosterLog({level:'success',title:item.titleRu||item.titleOrig||item.id,stage:'Загрузка завершена',reason:'Постер скопирован в Supabase Storage',url:sourceUrl,size:`${(blob.size/1024).toFixed(1)} КБ`});
     return {status:'uploaded'};
   } catch(error) {
-    console.warn('AnimeVault poster upload skipped:',item.titleRu,error?.message||error);
-    return {status:'failed',message:error?.message||'Ошибка загрузки'};
+    const reason=posterFailureReason(error,stage);
+    addPosterLog({level:'error',title:item.titleRu||item.titleOrig||item.id,stage,reason,http:error?.http||response?.status||null,size:blob?`${(blob.size/1024).toFixed(1)} КБ`:null,url:sourceUrl||String(item.posterUrl||item.apiPosterUrl||'')});
+    console.warn('AnimeVault poster upload failed:',item.titleRu,stage,reason);
+    return {status:'failed',stage,message:reason};
   }
 }
 async function uploadLibraryPosters(items) {
   const queue=items.filter(item=>(item.posterUrl || item.apiPosterUrl) && !item.posterCloudUrl && item.recordUuid);
   let uploaded=0,failed=0,done=0;
+  if(!queue.length) { cloudStatus('Постеры: новых для загрузки нет. Облачные ссылки уже сохранены либо у записей отсутствует URL постера.'); return {uploaded,failed,total:0}; }
+  addPosterLog({level:'success',title:'Начало проверки',stage:'Очередь',reason:`В очереди ${queue.length} постеров без облачной копии.`});
   for(let i=0;i<queue.length;i+=3) {
     const results=await Promise.all(queue.slice(i,i+3).map(uploadPosterToCloud));
     for(const result of results) { if(result.status==='uploaded') uploaded++; else if(result.status==='failed') failed++; }
     done+=results.length;
-    if(done%30===0 || done===queue.length) cloudStatus(`Постеры: обработано ${done} из ${queue.length}, загружено ${uploaded}${failed?`, ошибок ${failed}`:''}.`);
+    cloudStatus(`Постеры: ${done}/${queue.length}. Успешно: ${uploaded}. Ошибки: ${failed}. Подробности — в журнале ниже.`);
   }
+  addPosterLog({level:failed?'error':'success',title:'Итог загрузки',stage:'Завершение',reason:`Проверено: ${done}; загружено: ${uploaded}; ошибок: ${failed}; пропущено: ${items.length-queue.length}.`});
   return {uploaded,failed,total:queue.length};
 }
 
@@ -1013,7 +1043,7 @@ async function syncCloudNow() {
       const {error}=await supabaseClient.from('animevault_records').upsert(upserts.slice(i,i+100),{onConflict:'owner_id,record_id'});
       if(error) throw error; pushed+=Math.min(100,upserts.length-i);
     }
-    cloudStatus(`Синхронизировано. Получено: ${pulled}, отправлено: ${pushed}. Постеры: +${posterResult.uploaded}${posterResult.failed?`, не удалось: ${posterResult.failed}`:''}.`,'success');
+    cloudStatus(`Синхронизация записей завершена: получено ${pulled}, отправлено ${pushed}. Постеры: проверено ${posterResult.total}, загружено ${posterResult.uploaded}, ошибок ${posterResult.failed}. Подробные причины ошибок см. в журнале постеров.`,'success');
     $('cloud-last-sync').textContent=`Последняя синхронизация: ${new Date().toLocaleString('ru-RU')}`;
     await loadAnimeData();
   } catch(err) {
@@ -1029,6 +1059,9 @@ async function initCloudAuth() {
   $('cloud-auth-mode').addEventListener('change',e=>{$('cloud-submit').textContent=e.target.value==='signup'?'Создать аккаунт':'Войти';});
   $('cloud-signout').addEventListener('click',cloudSignOut);
   $('cloud-sync-now').addEventListener('click',syncCloudNow);
+  $('poster-log-copy')?.addEventListener('click',async()=>{const txt=posterLogEntries.map(x=>`${x.time} | ${x.level} | ${x.title} | этап: ${x.stage} | причина: ${x.reason} | HTTP: ${x.http||'-'} | URL: ${x.url||'-'}`).join('\n');try{await navigator.clipboard.writeText(txt);cloudStatus('Журнал постеров скопирован.','success');}catch{cloudStatus('Не удалось скопировать журнал: браузер запретил доступ к буферу обмена.','error');}});
+  $('poster-log-clear')?.addEventListener('click',()=>{posterLogEntries=[];try{localStorage.removeItem(POSTER_LOG_KEY);}catch{}renderPosterLog();cloudStatus('Журнал постеров очищен.');});
+  renderPosterLog();
   const {data:{session}}=await supabaseClient.auth.getSession();
   setCloudSignedIn(session?.user || null);
   supabaseClient.auth.onAuthStateChange((_event,nextSession)=>{
@@ -1114,6 +1147,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.3.4 · Cloud Posters';
+  $('app-version').textContent='v1.3.5 · Detailed Poster Log';
 }
 document.addEventListener('DOMContentLoaded',init);
