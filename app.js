@@ -1237,14 +1237,23 @@ async function ensureLocalCloudIds() {
   await db.sync_meta.put({key:'localCloudIdsEnsuredV1',value:new Date().toISOString()});
 }
 async function uploadPosterToCloud(item) {
-  const sourceUrl=safeURL(item?.posterUrl||item?.apiPosterUrl);
-  if(!(item?.posterUrl||item?.apiPosterUrl)||(item.posterDriveFileId&&Number(item.posterPending)!==1)||!item.recordUuid) return {status:'skip'};
-  let stage='Источник',blob=null;
+  const rawSources=[item?.posterUrl,item?.apiPosterUrl].filter(Boolean);
+  const sources=[...new Set(rawSources.map(value=>safeURL(value)).filter(url=>url&&url.startsWith('https://')&&!/\/assets\/globals\/missing_original\.(?:jpg|png|webp)(?:[?#]|$)/i.test(url)))];
+  if(!rawSources.length||(item.posterDriveFileId&&Number(item.posterPending)!==1)||!item.recordUuid) return {status:'skip'};
+  if(!sources.length) {
+    addPosterLog({level:'info',title:item.titleRu||item.titleOrig||item.id,stage:'Пропуск',reason:'У источника нет настоящего постера (служебная заглушка Shikimori).'});
+    return {status:'skip'};
+  }
+  let stage='Источник',blob=null,sourceUrl=sources[0],lastSourceError=null;
   try {
     if(!driveAccessToken) throw new Error('Google Drive не подключён.');
-    if(!sourceUrl||!sourceUrl.startsWith('https://')) throw new Error('Нужен безопасный HTTPS-адрес постера.');
     stage='Скачивание через защищённый серверный прокси';
-    blob=await fetchPosterFromSource(sourceUrl);
+    for(const candidate of sources) {
+      sourceUrl=candidate;
+      try { blob=await fetchPosterFromSource(candidate); break; }
+      catch(error) { lastSourceError=error; }
+    }
+    if(!blob) throw lastSourceError||new Error('Не удалось получить постер ни из одного источника.');
     const type=(blob.type||'').split(';')[0].toLowerCase();
     const allowed=['image/jpeg','image/png','image/webp','image/gif','image/avif'];
     if(!allowed.includes(type)) throw new Error(`Источник вернул неподдерживаемый тип изображения: ${type||'не указан'}`);
