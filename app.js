@@ -145,7 +145,8 @@ async function loadAnimeData() {
       const genreOK = filterGenre === 'Все' || (item.genres||[]).includes(filterGenre);
       const formatOK = filterFormat === 'Все' || item.format === filterFormat;
       const yearOK = filterYear === 'Все' || String(item.year||'') === filterYear;
-      const progressOK = filterProgress === 'Все' || (filterProgress === 'С постером' ? !!item.posterUrl : filterProgress === 'Без постера' ? !item.posterUrl : filterProgress === 'С метаданными' ? !!item.anilistId : !item.anilistId);
+      const hasMetadata=!!(item.anilistId||item.malId||item.kitsuId||item.metadataLookupStatus==='found');
+      const progressOK = filterProgress === 'Все' || (filterProgress === 'С постером' ? !!(item.posterUrl||item.posterDriveFileId||item.apiPosterUrl) : filterProgress === 'Без постера' ? !(item.posterUrl||item.posterDriveFileId||item.apiPosterUrl) : filterProgress === 'С метаданными' ? hasMetadata : !hasMetadata);
       return statusOK && genreOK && formatOK && yearOK && progressOK && (!query || haystack.includes(query));
     });
     items.sort((a,b) => (b.id || 0) - (a.id || 0));
@@ -348,13 +349,15 @@ async function fetchAnimeMetadataBatch(titles) {
   const result=new Map(); if(!unique.length) return result;
   const payload=await callAniListProxy({action:'metadata',titles:unique});
   for(const row of (Array.isArray(payload?.results)?payload.results:[])) {
-    if(row?.searchTitle&&row?.metadata?.anilistId) result.set(row.searchTitle,row.metadata);
+    if(row?.searchTitle) result.set(row.searchTitle,{metadata:row.metadata||null,status:row.status||'error',error:row.error||''});
   }
   return result;
 }
 async function fetchAnimeMetadata(title) {
   const result=await fetchAnimeMetadataBatch([title]);
-  return result.get(String(title||'').trim())||null;
+  const row=result.get(String(title||'').trim());
+  if(row?.status==='error') throw new Error(row.error||'Все источники поиска аниме недоступны.');
+  return row?.metadata||null;
 }
 async function fetchRussianDescription(item) {
   if(!supabaseClient) throw new Error('Supabase SDK недоступен для получения русского описания.');
@@ -430,15 +433,21 @@ async function enrichOne(item, metadataMap=null) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,3);
   if (!candidates.length && !item.anilistId) return 'no_title';
   try {
-    let russianOnly=!item.anilistId&&(!!item.metadataUpdatedAt||item.metadataLookupStatus==='not_found');
+    let russianOnly=!item.anilistId&&(!!item.metadataUpdatedAt||item.metadataLookupStatus==='found'||item.metadataLookupStatus==='not_found');
     let meta=(item.anilistId||russianOnly)?{}:null;
     if(!item.anilistId&&!russianOnly) {
-      if(metadataMap) meta=candidates.map(title=>metadataMap.get(title)).find(Boolean)||null;
-      else {const found=await fetchAnimeMetadataBatch(candidates);meta=candidates.map(title=>found.get(title)).find(Boolean)||null;}
+      let lookup=null;
+      if(metadataMap) lookup=candidates.map(title=>metadataMap.get(title)).find(row=>row&&(row.metadata||row.status==='error'||row.status==='not_found'))||null;
+      else {
+        const found=await fetchAnimeMetadataBatch(candidates);
+        lookup=candidates.map(title=>found.get(title)).find(row=>row&&(row.metadata||row.status==='error'||row.status==='not_found'))||null;
+      }
+      if(lookup?.status==='error') throw new Error(lookup.error||'Все источники API недоступны.');
+      meta=lookup?.metadata||null;
       if(!meta) { russianOnly=true;meta={}; }
     }
     const checkedAt=new Date().toISOString();
-    const patch={...meta,metadataUpdatedAt:meta.anilistId?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:null,metadataLookupStatus:russianOnly?'not_found':'found'};
+    const patch={...meta,metadataUpdatedAt:meta.anilistId?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:null,metadataLookupStatus:meta.metadataProvider||item.metadataLookupStatus==='found'?'found':(russianOnly?'not_found':'found')};
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
     if(!item.descriptionRu || item.descriptionRuStatus==='error') {
@@ -473,6 +482,26 @@ async function enrichOne(item, metadataMap=null) {
     return 'error';
   }
 }
+async function runApiDiagnostics() {
+  const button=$('btn-api-diagnostics'), output=$('api-diagnostics-result');
+  if(button){button.disabled=true;button.textContent='Проверяем…';}
+  if(output)output.textContent='Проверяем доступность AniList, Shikimori и Kitsu…';
+  try {
+    const result=await callAniListProxy({action:'diagnostics'});
+    const rows=Array.isArray(result.providers)?result.providers:[];
+    const lines=rows.map(row=>`${row.ok?'✓':'✕'} ${row.provider}: ${row.status||'сеть недоступна'} · ${row.latencyMs} мс · ${row.detail||''}`);
+    if(output)output.textContent=`Проверка от ${new Date(result.checkedAt||Date.now()).toLocaleTimeString('ru-RU')}\n${lines.join('\n')}`;
+    addEnrichmentLog(`Диагностика API: ${rows.map(x=>`${x.provider} ${x.status||'network'}`).join(', ')}`,rows.every(x=>x.ok)?'success':'error');
+    showToast(rows.some(x=>x.ok)?'Проверка API завершена':'Все API сейчас недоступны',rows.some(x=>x.ok)?'success':'error');
+  } catch(error) {
+    const message=String(error?.message||error);
+    if(output)output.textContent=`Ошибка диагностики: ${message}`;
+    addEnrichmentLog(`Ошибка диагностики API: ${message}`,'error');
+    showToast(message,'error');
+  } finally {
+    if(button){button.disabled=false;button.textContent='Проверить API';}
+  }
+}
 async function enrichLibrary() {
   if (enrichmentRunning) return;
   if (!navigator.onLine) {
@@ -486,7 +515,7 @@ async function enrichLibrary() {
   const now=Date.now();
   const queue = all.filter(x => {
     const hasTitle=[x.titleOrig,x.titleRu,x.titleAlt].some(v=>String(v||'').trim());
-    const metadataDue=!x.anilistId && x.metadataLookupStatus!=='not_found' && hasTitle &&
+    const metadataDue=!x.anilistId && x.metadataLookupStatus!=='found' && x.metadataLookupStatus!=='not_found' && hasTitle &&
       (!x.metadataLookupAttemptedAt || (x.metadataLookupStatus==='error' && Date.parse(x.metadataRetryAt||0)<=now));
     const hasRussianSource=!!(x.anilistId || x.description || x.metadataUpdatedAt || x.metadataLookupStatus==='not_found');
     const descriptionDue=!x.descriptionRu && x.descriptionRuStatus!=='not_found' && hasRussianSource &&
@@ -513,7 +542,7 @@ async function enrichLibrary() {
       if(enrichmentCancel) break;
       if(!navigator.onLine){addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.','error');break;}
       const batch=queue.slice(i,i+3);
-      const needAni=batch.filter(x=>!x.anilistId&&!x.metadataUpdatedAt&&x.metadataLookupStatus!=='not_found');
+      const needAni=batch.filter(x=>!x.anilistId&&x.metadataLookupStatus!=='found'&&x.metadataLookupStatus!=='not_found'&&!x.metadataUpdatedAt);
       const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean).slice(0,3)))];
       let metadataMap=new Map(),metadataBatchError=null;
       if(titles.length) {
@@ -665,7 +694,7 @@ function renderStatistics() {
     $('watch-chart').innerHTML=`${watchByStatus.map(x=>`<div class="bar-row"><span>${escapeHTML(x.status)}</span><div class="bar-track"><div class="bar-fill" style="width:${x.episodes/maxStatusEpisodes*100}%"></div></div><b>${x.episodes} сер.</b></div><div style="margin:-6px 0 9px 109px;color:#92929c;font-size:11px">${hours(x.minutes)}</div>`).join('')}<p style="color:#92929c;font-size:12px">Серии и часы показаны отдельно по каждому статусу. Для завершённых учитывается полное число серий из API, для остальных — отмеченный прогресс.</p>`;
     const formats={}; for(const x of items) if(x.format) formats[x.format]=(formats[x.format]||0)+1;
     $('format-chart').innerHTML=Object.keys(formats).length?Object.entries(formats).map(([name,n])=>`<div class="bar-row"><span>${escapeHTML(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${n/Math.max(1,...Object.values(formats))*100}%"></div></div><b>${n}</b></div>`).join(''):'<p style="color:#92929c">Пока нет данных. Запустите массовое обновление через AniList.</p>';
-    const withMeta=items.filter(x=>x.anilistId).length, withPoster=items.filter(x=>x.posterUrl).length;
+    const withMeta=items.filter(x=>x.anilistId||x.malId||x.kitsuId||x.metadataLookupStatus==='found').length, withPoster=items.filter(x=>x.posterUrl||x.posterDriveFileId||x.apiPosterUrl).length;
     $('metadata-chart').innerHTML=`<div class="bar-row"><span>Метаданные API</span><div class="bar-track"><div class="bar-fill" style="width:${withMeta/total*100}%"></div></div><b>${withMeta}</b></div><div class="bar-row"><span>Постеры</span><div class="bar-track"><div class="bar-fill" style="width:${withPoster/total*100}%"></div></div><b>${withPoster}</b></div><p style="color:#92929c;font-size:12px">Время считается приблизительно: длительность серии × число серий. Для незавершённых учитываются только отмеченные серии.</p>`;
   });
 }
@@ -1472,6 +1501,7 @@ function bindEvents() {
   $('menu-update').addEventListener('click',()=>{document.querySelector('.manage-menu').open=false;switchStats('update');});
   $('mobile-update').addEventListener('click',()=>switchStats('update'));
   $('btn-enrich-start').addEventListener('click',enrichLibrary);
+  $('btn-api-diagnostics')?.addEventListener('click',runApiDiagnostics);
   $('btn-retry-enrich-errors')?.addEventListener('click',async()=>{
     const failed=await db.anime.filter(x=>x.metadataLookupStatus==='error'||x.descriptionRuStatus==='error').toArray();
     const due=new Date(0).toISOString();
