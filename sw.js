@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v149-video-player';
+const CACHE_NAME = 'animevault-shell-v150-aniliberty-catalog';
 const APP_SHELL = [
   './',
   './index.html',

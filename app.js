@@ -1719,8 +1719,9 @@ async function openPlayer(id){
  const eps=playerEpisodes(item),cur=Math.max(1,Number(item.currentEpisode)||1),initial=eps.includes(cur)?cur:(eps[0]||cur);
  $('player-episode').innerHTML=(eps.length?eps:[initial]).map(n=>'<option value="'+n+'" '+(n===initial?'selected':'')+'>'+n+' серия</option>').join('');
  $('player-add-episode').value=String(initial);
- if(!eps.length){$('player-empty').classList.remove('hidden');$('player-video-wrap').classList.add('hidden');$('player-status').textContent='Добавьте ссылку на серию в блоке «Источники видео» ниже.';}
+ if(!eps.length){$('player-empty').classList.remove('hidden');$('player-video-wrap').classList.add('hidden');$('player-status').textContent='Ищу серии в видеокаталоге…';}
  else await selectPlayerEpisode(initial);
+ await autoSearchPlayerCatalog(item);
 }
 function renderPlayerSources(sources,voice){const filtered=sources.filter(s=>String(s.voice||'Оригинал')===voice);$('player-source').innerHTML=filtered.map(s=>'<option value="'+s._index+'">'+escapeHTML(s.label||s.quality||s.type.toUpperCase()+' источник '+(s._index+1))+'</option>').join('');}
 async function selectPlayerEpisode(episode){
@@ -1757,9 +1758,115 @@ function bindPlayerEvents(){
  $('player-episode').addEventListener('change',e=>selectPlayerEpisode(Number(e.target.value)));
  $('player-voice').addEventListener('change',async e=>{const item=await db.anime.get(playerAnimeId);if(!item)return;renderPlayerSources(playerSourcesFor(item,Number($('player-episode').value)),e.target.value);await loadPlayerSource(Number($('player-source').value));});
  $('player-source').addEventListener('change',e=>loadPlayerSource(Number(e.target.value)));$('player-quality').addEventListener('change',e=>{if(playerHls)playerHls.currentLevel=Number(e.target.value);});
- $('player-add-form').addEventListener('submit',addPlayerSource);$('player-fullscreen').addEventListener('click',()=>{const el=$('player-video-wrap');if(document.fullscreenElement)document.exitFullscreen();else if(el.requestFullscreen)el.requestFullscreen();});
+ $('player-search-button').addEventListener('click',searchPlayerCatalog);$('player-search-query').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();searchPlayerCatalog();}});$('player-search-results').addEventListener('click',e=>{const btn=e.target.closest('[data-release-index]');if(btn){const release=$('player-search-results')._releases?.[Number(btn.dataset.releaseIndex)];if(release)choosePlayerCatalogRelease(release);}});$('player-add-form').addEventListener('submit',addPlayerSource);$('player-fullscreen').addEventListener('click',()=>{const el=$('player-video-wrap');if(document.fullscreenElement)document.exitFullscreen();else if(el.requestFullscreen)el.requestFullscreen();});
  $('player-video').addEventListener('timeupdate',()=>savePlayerProgress(false));$('player-video').addEventListener('pause',()=>savePlayerProgress(true));
  $('player-video').addEventListener('ended',async()=>{const item=await db.anime.get(playerAnimeId);if(!item)return;const ep=Number($('player-episode').value);await db.anime.update(playerAnimeId,{currentEpisode:Math.max(Number(item.currentEpisode)||0,ep),playerProgress:{...(item.playerProgress||{}),[ep]:0}});showToast('Серия завершена. Прогресс сохранён.','success');});
+}
+
+
+const ANILIBERTY_API_BASES=['https://anilibria.top/api/v1','https://aniliberty.top/api/v1'];
+let anilibertyApiBase=ANILIBERTY_API_BASES[0];
+function playerApiName(release){return release?.name?.main||release?.name?.ru||release?.name?.english||release?.name||release?.title||'Без названия';}
+function playerApiArray(data){if(Array.isArray(data))return data;if(Array.isArray(data?.data))return data.data;if(Array.isArray(data?.items))return data.items;if(Array.isArray(data?.list))return data.list;return [];}
+async function anilibertyRequest(path){
+ let lastError=null;
+ for(const base of [anilibertyApiBase,...ANILIBERTY_API_BASES.filter(x=>x!==anilibertyApiBase)]){
+  try{
+   const response=await fetch(base+path,{headers:{'Accept':'application/json'},signal:AbortSignal.timeout(12000)});
+   if(!response.ok)throw new Error('HTTP '+response.status);
+   const payload=await response.json();
+   if(payload?.error||payload?.errors)throw new Error(String(payload.error?.message||payload.message||'Ошибка API AniLiberty'));
+   anilibertyApiBase=base;return payload?.data??payload;
+  }catch(error){lastError=error;}
+ }
+ throw new Error('AniLiberty API недоступен: '+(lastError?.message||'ошибка сети'));
+}
+function playerApiTitleScore(localTitle,release){
+ const target=norm(localTitle),names=[playerApiName(release),release?.name?.english,release?.name?.alternative,release?.alias].map(norm).filter(Boolean);
+ if(!target)return 0;let score=0;
+ for(const name of names){if(name===target)score=Math.max(score,1);else if(name.includes(target)||target.includes(name))score=Math.max(score,Math.min(name.length,target.length)/Math.max(name.length,target.length));else{const a=new Set(name.split(' ')),b=new Set(target.split(' '));score=Math.max(score,[...a].filter(x=>b.has(x)).length/Math.max(1,new Set([...a,...b]).size));}}
+ return score;
+}
+function renderPlayerSearchResults(releases){
+ const host=$('player-search-results');
+ if(!releases.length){host.innerHTML='<p class="player-status">В каталоге AniLiberty совпадений не найдено. Можно попробовать другое название или добавить ссылку вручную.</p>';return;}
+ host.innerHTML=releases.slice(0,10).map((r,i)=>'<button class="player-match" type="button" data-release-index="'+i+'"><span><strong>'+escapeHTML(playerApiName(r))+'</strong><small>'+escapeHTML([r?.name?.english,r?.year,r?.type?.description||r?.type?.value].filter(Boolean).join(' · '))+'</small></span><span>Выбрать →</span></button>').join('');
+ host._releases=releases;
+}
+async function searchPlayerCatalog(queryOverride){
+ const query=String(queryOverride||$('player-search-query').value).trim();if(!query)return;
+ const btn=$('player-search-button');btn.disabled=true;btn.textContent='Ищу…';$('player-search-results').innerHTML='<p class="player-status">Поиск в каталоге AniLiberty…</p>';
+ try{
+  const payload=await anilibertyRequest('/app/search/releases?query='+encodeURIComponent(query));
+  const releases=playerApiArray(payload);
+  const sorted=releases.map(r=>({...r,_match:playerApiTitleScore(query,r)})).sort((a,b)=>b._match-a._match);
+  renderPlayerSearchResults(sorted);
+  $('player-status').textContent=sorted.length?'Найдено вариантов: '+sorted.length+'. Выбери подходящий релиз.':'В каталоге не найдено совпадений.';
+ }catch(error){$('player-search-results').innerHTML='<p class="player-status">'+escapeHTML(error.message)+'</p>';$('player-status').textContent='Поиск источников не удался.';}
+ finally{btn.disabled=false;btn.textContent='Найти серии';}
+}
+async function choosePlayerCatalogRelease(release){
+ $('player-status').textContent='Загружаю список серий и доступные потоки…';
+ try{
+  const id=release.id??release.alias;if(!id)throw new Error('API не вернул ID релиза.');
+  const detail=await anilibertyRequest('/anime/releases/'+encodeURIComponent(String(id)));
+  const episodes=Array.isArray(detail?.episodes)?detail.episodes:[];
+  if(!episodes.length)throw new Error('В каталоге есть релиз, но API не вернул список серий.');
+  const releaseName=playerApiName(detail);
+  const voiceNames=Array.isArray(detail?.members)?detail.members.filter(m=>/voice|озвуч/i.test(String(m?.role?.value||m?.role?.description||m?.role||''))).map(m=>m?.nickname||m?.name).filter(Boolean):[];
+  const voice='AniLiberty'+(voiceNames.length?' · '+voiceNames.slice(0,3).join(', '):'');
+  const sources=[];
+  const episodeRows=episodes.slice(0,100).filter(ep=>Number.isFinite(Number(ep?.ordinal??ep?.number??ep?.sort_order))&&Number(ep?.ordinal??ep?.number??ep?.sort_order)>0&&ep?.id);
+  for(let offset=0;offset<episodeRows.length;offset+=5){
+   const batch=episodeRows.slice(offset,offset+5);
+   const resolved=await Promise.all(batch.map(async ep=>{
+    const epNo=Number(ep?.ordinal??ep?.number??ep?.sort_order);
+    try{return {epNo,data:await anilibertyRequest('/anime/releases/episodes/'+encodeURIComponent(String(ep.id)))};}
+    catch(error){console.warn('AniLiberty episode unavailable:',epNo,error);return {epNo,data:null};}
+   }));
+   for(const row of resolved){
+    if(!row.data)continue;
+    const links=[['1080p',row.data?.hls_1080],['720p',row.data?.hls_720],['480p',row.data?.hls_480]].filter(x=>safeURL(x[1]));
+    for(const [quality,url] of links)sources.push({episode:row.epNo,voice,url:safeURL(url),type:'hls',quality,label:'AniLiberty · '+quality,provider:'AniLiberty',providerReleaseId:String(id),providerReleaseAlias:detail?.alias||release?.alias||''});
+   }
+  }
+  if(!sources.length)throw new Error('Релиз найден, но API не предоставил доступные HLS-потоки для серий.');
+  const item=await db.anime.get(playerAnimeId);if(!item)return;
+  const other=(item.playerSources||[]).filter(s=>s.provider!=='AniLiberty');
+  await db.anime.update(playerAnimeId,{playerSources:[...other,...sources],aniLibertyReleaseId:String(id),aniLibertyReleaseAlias:detail?.alias||release?.alias||'',aniLibertyReleaseName:releaseName});
+  const updated=await db.anime.get(playerAnimeId),all=playerEpisodes(updated);
+  $('player-episode').innerHTML=all.map(n=>'<option value="'+n+'">'+n+' серия</option>').join('');
+  $('player-episode').value=String(Math.max(1,Number(item.currentEpisode)||1));
+  if(!$('player-episode').value)$('player-episode').selectedIndex=0;
+  $('player-add-episode').value=$('player-episode').value;
+  await selectPlayerEpisode(Number($('player-episode').value));
+  $('player-status').textContent='Подключено к AniLiberty: '+releaseName+'. Загружено потоков: '+sources.length+'.';
+  showToast('Найдены серии AniLiberty: '+sources.length+' потоков.','success');
+ }catch(error){$('player-status').textContent=error.message;showToast(error.message,'error');}
+}
+async function autoSearchPlayerCatalog(item){
+ const known=item.aniLibertyReleaseId||item.aniLibertyReleaseAlias;
+ const query=item.titleRu||item.titleOrig||'';
+ if(known){
+  try{
+   const detail=await anilibertyRequest('/anime/releases/'+encodeURIComponent(String(known)));
+   await choosePlayerCatalogRelease(detail);
+   return;
+  }catch(error){console.warn('Saved AniLiberty release lookup failed:',error);}
+ }
+ const queries=[...new Set([item.titleRu,item.titleOrig,item.titleAlt].map(x=>String(x||'').trim()).filter(x=>x.length>=2))];
+ let combined=[];
+ for(const candidate of queries){
+  $('player-search-query').value=candidate;
+  await searchPlayerCatalog(candidate);
+  combined.push(...($('player-search-results')._releases||[]));
+  if(combined.some(r=>playerApiTitleScore(candidate,r)>=0.98))break;
+ }
+ const unique=[...new Map(combined.map(r=>[String(r.id??r.alias??playerApiName(r)),r])).values()];
+ unique.sort((a,b)=>Math.max(...queries.map(q=>playerApiTitleScore(q,a)))-Math.max(...queries.map(q=>playerApiTitleScore(q,b))));
+ renderPlayerSearchResults(unique);
+ const exact=unique.filter(r=>Math.max(...queries.map(q=>playerApiTitleScore(q,r)))>=0.92);
+ if(exact.length===1)await choosePlayerCatalogRelease(exact[0]);
 }
 
 document.addEventListener('DOMContentLoaded',init);
