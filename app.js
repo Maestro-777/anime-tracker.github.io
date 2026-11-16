@@ -1793,8 +1793,8 @@ function renderPlayerSearchResults(releases){
  host.innerHTML=releases.slice(0,10).map((r,i)=>'<button class="player-match" type="button" data-release-index="'+i+'"><span><strong>'+escapeHTML(playerApiName(r))+'</strong><small>'+escapeHTML([r?.name?.english,r?.year,r?.type?.description||r?.type?.value].filter(Boolean).join(' · '))+'</small></span><span>Выбрать →</span></button>').join('');
  host._releases=releases;
 }
-async function searchPlayerCatalog(){
- const query=$('player-search-query').value.trim();if(!query)return;
+async function searchPlayerCatalog(queryOverride){
+ const query=String(queryOverride||$('player-search-query').value).trim();if(!query)return;
  const btn=$('player-search-button');btn.disabled=true;btn.textContent='Ищу…';$('player-search-results').innerHTML='<p class="player-status">Поиск в каталоге AniLiberty…</p>';
  try{
   const payload=await anilibertyRequest('/app/search/releases?query='+encodeURIComponent(query));
@@ -1854,10 +1854,18 @@ async function autoSearchPlayerCatalog(item){
    return;
   }catch(error){console.warn('Saved AniLiberty release lookup failed:',error);}
  }
- $('player-search-query').value=query;
- await searchPlayerCatalog();
- const host=$('player-search-results'),releases=host._releases||[];
- const exact=releases.filter(r=>playerApiTitleScore(query,r)>=0.92);
+ const queries=[...new Set([item.titleRu,item.titleOrig,item.titleAlt].map(x=>String(x||'').trim()).filter(x=>x.length>=2))];
+ let combined=[];
+ for(const candidate of queries){
+  $('player-search-query').value=candidate;
+  await searchPlayerCatalog(candidate);
+  combined.push(...($('player-search-results')._releases||[]));
+  if(combined.some(r=>playerApiTitleScore(candidate,r)>=0.98))break;
+ }
+ const unique=[...new Map(combined.map(r=>[String(r.id??r.alias??playerApiName(r)),r])).values()];
+ unique.sort((a,b)=>Math.max(...queries.map(q=>playerApiTitleScore(q,a)))-Math.max(...queries.map(q=>playerApiTitleScore(q,b))));
+ renderPlayerSearchResults(unique);
+ const exact=unique.filter(r=>Math.max(...queries.map(q=>playerApiTitleScore(q,r)))>=0.92);
  if(exact.length===1)await choosePlayerCatalogRelease(exact[0]);
 }
 
