@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#09090b">
+  <meta name="description" content="AnimeVault — личная библиотека аниме с офлайн-доступом.">
+  <meta name="color-scheme" content="dark">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./icon-192.png" sizes="192x192">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <title>AnimeVault — Anime Tracker</title>
+  <style>
+    :root{color-scheme:dark;--bg:#09090b;--panel:#111114;--panel2:#18181b;--line:#29292f;--muted:#92929c;--text:#fafafa;--red:#dc2626;--red2:#ef4444;--radius:16px}
+    *{box-sizing:border-box}html{min-width:320px;background:var(--bg);scroll-behavior:smooth}
+    body{margin:0;min-height:100vh;padding-bottom:48px;background:radial-gradient(circle at 90% -10%,rgba(239,68,68,.12),transparent 420px),var(--bg);color:var(--text);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    button,input,select{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #f87171;outline-offset:2px}
+    .top-line{height:2px;background:linear-gradient(90deg,transparent,rgba(239,68,68,.7),transparent)}
+    .header{position:sticky;top:0;z-index:20;background:rgba(9,9,11,.88);backdrop-filter:blur(18px);border-bottom:1px solid rgba(63,63,70,.65)}
+    .header-inner{max-width:1200px;margin:auto;padding:15px 22px;display:flex;align-items:center;justify-content:space-between;gap:18px}
+    .brand{display:flex;align-items:center;gap:11px;white-space:nowrap}.brand-mark{width:7px;height:31px;border-radius:5px;background:var(--red2);box-shadow:0 0 18px #ef444466}
+    .brand-name{font-size:20px;font-weight:900;letter-spacing:.13em;text-transform:uppercase}.brand-name span{color:var(--red2)}
+    .tabs{display:flex;gap:4px;padding:4px;background:#18181b;border:1px solid var(--line);border-radius:12px}
+    .tab{border:0;background:transparent;color:#a1a1aa;padding:8px 16px;border-radius:9px;font-size:13px;font-weight:650;transition:.2s}
+    .tab:hover{color:white}.tab.active{background:var(--red);color:white;box-shadow:0 5px 18px #dc262633}
+    .header-actions{display:flex;align-items:center;gap:8px}
+    .btn{border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:#18181b;color:#d4d4d8;font-size:12px;font-weight:650;transition:.18s}
+    .btn:hover{background:#27272a;color:white;border-color:#52525b}.btn-primary{background:var(--red);border-color:var(--red);color:white;text-transform:uppercase;letter-spacing:.06em}
+    .btn-primary:hover{background:#ef4444;border-color:#ef4444}.btn-quiet{background:transparent}
+    .file-label{display:inline-flex;align-items:center;gap:7px;cursor:pointer}.file-label input{display:none}
+    .container{max-width:1200px;margin:auto;padding:0 22px}
+    .toolbar{margin-top:25px;padding:13px;display:flex;gap:10px;background:rgba(24,24,27,.65);border:1px solid #27272a;border-radius:13px}
+    .search-wrap{flex:1;position:relative}.search-wrap:before{content:"⌕";position:absolute;left:13px;top:6px;font-size:24px;color:#71717a}
+    .search,.filter{width:100%;height:40px;border:1px solid #303036;background:#09090b;border-radius:9px;color:#e4e4e7;padding:0 13px;font-size:13px}
+    .search{padding-left:40px}.search::placeholder{color:#71717a}.filter{max-width:205px}
+    .stats{display:flex;justify-content:space-between;align-items:center;color:#71717a;font-size:12px;margin:13px 2px 18px}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}
+    .anime-card{display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;min-width:0;border:1px solid #29292f;border-radius:17px;background:linear-gradient(180deg,#18181b,#0c0c0f);transition:transform .2s,border-color .2s,box-shadow .2s}
+    .anime-card:hover{transform:translateY(-3px);border-color:#52525b;box-shadow:0 16px 35px #0008}
+    .poster-wrap{height:220px;position:relative;overflow:hidden;background:#18181b;border-bottom:1px solid #27272a}
+    .poster{width:100%;height:100%;display:block;object-fit:cover;object-position:center 30%;transition:transform .45s}
+    .anime-card:hover .poster{transform:scale(1.035)}.poster-shade{position:absolute;inset:30% 0 0;background:linear-gradient(transparent,rgba(9,9,11,.9));pointer-events:none}
+    .favorite-btn{position:absolute;top:12px;right:12px;width:36px;height:36px;border-radius:50%;border:1px solid #3f3f46;background:#09090bd9;color:#a1a1aa;font-size:20px;backdrop-filter:blur(8px)}
+    .favorite-btn.is-favorite{color:#fbbf24;text-shadow:0 0 12px #fbbf2466}
+    .status-badge{position:absolute;bottom:12px;left:13px;padding:4px 9px;border:1px solid;border-radius:7px;font-size:11px;font-weight:750;backdrop-filter:blur(8px)}
+    .status-watching{color:#f87171;background:#7f1d1d55;border-color:#ef444455}.status-planned{color:#93c5fd;background:#1e3a8a55;border-color:#3b82f655}
+    .status-completed{color:#6ee7b7;background:#064e3b55;border-color:#10b98155}.status-paused{color:#fcd34d;background:#78350f55;border-color:#f59e0b55}
+    .status-dropped{color:#a1a1aa;background:#27272a99;border-color:#52525b}
+    .card-content{padding:15px 16px 12px}.anime-title{font-size:15px;font-weight:800;line-height:1.35;margin:0;color:#fafafa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .anime-subtitle{font-size:11px;color:#85858f;margin:4px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.anime-subtitle span{color:#62626c}
+    .card-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:15px;padding-top:11px;border-top:1px solid #27272a;min-height:38px}
+    .episode-stepper{display:flex;align-items:center;gap:7px;border:1px solid #303036;background:#09090b;padding:3px;border-radius:8px}
+    .episode-stepper button{border:0;background:transparent;color:#a1a1aa;width:22px;height:22px;border-radius:5px;font-weight:800}
+    .episode-stepper button:hover{background:#27272a;color:white}.episode-stepper span{font-size:11px;font-weight:750;min-width:45px;text-align:center}
+    .progress-muted{font-size:11px;color:#62626c}.watch-link{font-size:11px;color:#f87171;text-decoration:none;padding:5px 8px;background:#7f1d1d22;border:1px solid #7f1d1d55;border-radius:7px;white-space:nowrap}
+    .watch-link:hover{color:#fecaca;border-color:#ef4444}
+    .card-actions{display:flex;gap:8px;padding:0 16px 15px}.card-actions button{border-radius:8px;font-size:11px;padding:7px 10px}
+    .edit-btn{flex:1;border:1px solid #303036;background:#18181b;color:#a1a1aa}.edit-btn:hover{color:white;background:#27272a}
+    .delete-btn{border:1px solid transparent;background:transparent;color:#71717a}.delete-btn:hover{color:#f87171;background:#7f1d1d22;border-color:#7f1d1d66}
+    .empty-state{padding:80px 20px;text-align:center;border:1px dashed #3f3f46;border-radius:17px;background:#18181b22;color:#a1a1aa}
+    .empty-state strong{display:block;color:#e4e4e7;font-size:18px;margin-bottom:5px}.empty-state small{color:#71717a}
+    .modal{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;padding:18px;background:#000b;backdrop-filter:blur(8px)}
+    .modal.is-open{display:flex}.modal-panel{width:min(100%,520px);max-height:92vh;overflow:auto;border:1px solid #3f3f46;border-radius:18px;background:#0c0c0f;padding:23px;box-shadow:0 25px 90px #000b}
+    .modal-head{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #27272a;padding-bottom:14px;margin-bottom:18px}
+    .modal-head h2{font-size:17px;margin:0}.close-btn{border:0;background:transparent;color:#a1a1aa;font-size:25px}
+    .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.field{min-width:0}.field.full{grid-column:1/-1}
+    .field label{display:block;color:#a1a1aa;font-size:12px;font-weight:650;margin-bottom:6px}
+    .field input,.field select{width:100%;height:40px;padding:0 11px;border-radius:8px;border:1px solid #303036;background:#18181b;color:white;font-size:13px}
+    .field input:focus,.field select:focus{border-color:#ef4444;outline:none}
+    .episode-field.is-disabled{opacity:.35;pointer-events:none}.poster-tools{display:flex;gap:8px}.poster-tools input{flex:1;min-width:0}
+    .poster-tools button{white-space:nowrap}.poster-preview-wrap{display:flex;align-items:center;gap:12px;margin-top:9px;color:#71717a;font-size:11px}
+    .poster-preview{width:52px;height:66px;object-fit:cover;border-radius:6px;border:1px solid #3f3f46;background:#18181b}
+    .check-row{display:flex;align-items:center;gap:9px;padding:11px;border:1px solid #27272a;border-radius:10px;background:#18181b66}
+    .check-row input{accent-color:#dc2626;width:16px;height:16px}.check-row label{font-size:12px;color:#d4d4d8}
+    .modal-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:16px;margin-top:17px;border-top:1px solid #27272a}
+    .toast{position:fixed;z-index:80;left:50%;bottom:22px;transform:translate(-50%,20px);opacity:0;pointer-events:none;max-width:min(92vw,560px);padding:11px 16px;border:1px solid #3f3f46;border-radius:10px;background:#18181b;color:#f4f4f5;font-size:13px;box-shadow:0 10px 30px #0008;transition:.25s}
+    .toast.show{opacity:1;transform:translate(-50%,0)}.toast-error{border-color:#991b1b}.toast-success{border-color:#166534}
+    .is-busy{cursor:progress}.is-busy main{opacity:.7;pointer-events:none}
+    .footer{max-width:1200px;margin:35px auto 0;padding:0 22px;color:#52525b;font-size:11px;display:flex;justify-content:space-between}
+    .hidden{display:none!important}
+    @media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.header-inner{flex-wrap:wrap}.brand{margin-right:auto}}
+    @media(max-width:620px){body{padding-bottom:25px}.header-inner{padding:12px 14px;gap:10px}.brand-name{font-size:17px}.brand-mark{height:27px}
+      .header-inner{justify-content:center}.brand{width:100%;justify-content:center}.tabs{order:2}.header-actions{order:3;width:100%;justify-content:center;flex-wrap:wrap}
+      .container{padding:0 13px}.toolbar{margin-top:16px;padding:10px;flex-direction:column}.filter{max-width:none}
+      .stats{font-size:11px;margin-bottom:12px}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
+      .poster-wrap{height:clamp(145px,48vw,220px)}.card-content{padding:10px 10px 9px}.anime-title{font-size:12px}.anime-subtitle{font-size:10px}
+      .card-meta{margin-top:10px;padding-top:8px;gap:4px;flex-wrap:wrap}.episode-stepper{gap:2px}.episode-stepper span{min-width:38px;font-size:10px}
+      .episode-stepper button{width:19px}.watch-link{font-size:10px;padding:4px 6px}.card-actions{padding:0 10px 10px;gap:4px}
+      .card-actions button{font-size:10px;padding:6px 5px}.status-badge{left:8px;bottom:8px;font-size:9px;padding:3px 6px}
+      .favorite-btn{right:8px;top:8px;width:31px;height:31px}.modal{padding:8px}.modal-panel{padding:17px;border-radius:14px;max-height:95vh}
+      .form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.poster-tools{flex-direction:column}.poster-tools button{height:38px}
+      .footer{padding:0 14px}.empty-state{padding:55px 14px}
+    }
+    @media(max-width:370px){.grid{grid-template-columns:1fr}.poster-wrap{height:210px}.header-actions .btn{padding:8px 9px}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+  </style>
+</head>
+<body>
+  <div class="top-line"></div>
+  <header class="header">
+    <div class="header-inner">
+      <div class="brand"><div class="brand-mark"></div><div class="brand-name">Anime<span>Vault</span></div></div>
+      <nav class="tabs" aria-label="Фильтр библиотеки">
+        <button id="tab-all" class="tab active" aria-pressed="true">Все медиа</button>
+        <button id="tab-fav" class="tab" aria-pressed="false">★ Избранное</button>
+      </nav>
+      <div class="header-actions">
+        <label class="btn file-label">⇧ Импорт<input type="file" id="csv-file" accept=".csv,text/csv"></label>
+        <button id="btn-export" class="btn">Экспорт CSV</button>
+        <button id="btn-backup" class="btn btn-quiet" title="Скачать полную резервную копию">Бэкап JSON</button>
+        <button id="btn-add-modal" class="btn btn-primary">＋ Добавить</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="toolbar" aria-label="Поиск и фильтры">
+      <div class="search-wrap"><input id="search-input" class="search" type="search" placeholder="Поиск по названию или альтернативам…" autocomplete="off"></div>
+      <select id="filter-status" class="filter" aria-label="Фильтр по статусу">
+        <option value="Все">Все статусы</option>
+        <option value="Смотрю">📺 Смотрю</option>
+        <option value="В планах">📝 В планах</option>
+        <option value="Просмотрено">✓ Просмотрено</option>
+        <option value="Отложено">⏳ Отложено</option>
+        <option value="Брошено">✕ Брошено</option>
+      </select>
+    </section>
+    <div class="stats"><span id="library-count">0 аниме</span><span id="total-count">0 в библиотеке</span></div>
+    <section id="anime-list" class="grid" aria-live="polite"></section>
+    <section id="empty-state" class="empty-state hidden"><strong>Ваша медиатека пуста или ничего не найдено</strong><small>Импортируйте CSV или измените фильтры</small></section>
+    <p id="import-status" class="hidden" aria-live="polite"></p>
+  </main>
+  <footer class="footer"><span>AnimeVault · Личная библиотека аниме</span><span id="app-version">PWA</span></footer>
+
+  <div id="anime-modal" class="modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-panel">
+      <div class="modal-head"><h2 id="modal-title">Добавить новое аниме</h2><button id="btn-close-modal" class="close-btn" aria-label="Закрыть">×</button></div>
+      <form id="anime-form">
+        <input type="hidden" id="edit-id">
+        <div class="form-grid">
+          <div class="field full"><label for="form-title-ru">Русское название *</label><input id="form-title-ru" required maxlength="250"></div>
+          <div class="field full"><label for="form-title-orig">Оригинальное название</label><input id="form-title-orig" maxlength="250"></div>
+          <div class="field full"><label for="form-title-alt">Альтернативные названия</label><input id="form-title-alt" maxlength="1000"></div>
+          <div class="field"><label for="form-status">Статус просмотра</label><select id="form-status"><option>Смотрю</option><option>В планах</option><option>Просмотрено</option><option>Отложено</option><option>Брошено</option></select></div>
+          <div class="field episode-field" id="form-episodes-container"><label for="form-episodes">Текущая серия</label><input type="number" id="form-episodes" min="0" max="99999" value="0"></div>
+          <div class="field full"><label for="form-link">Ссылка на просмотр</label><input type="url" id="form-link" placeholder="https://…"></div>
+          <div class="field full">
+            <label for="form-poster">Постер — ссылка или автоматический поиск</label>
+            <div class="poster-tools"><input type="url" id="form-poster" placeholder="https://…"><button type="button" id="btn-search-poster" class="btn">Найти на Shikimori</button></div>
+            <div class="poster-preview-wrap"><img id="poster-preview" class="poster-preview" src="icon-192.png" alt="Предпросмотр постера"><span>Можно вставить прямую ссылку на изображение вручную</span></div>
+          </div>
+          <div class="field full"><div class="check-row"><input type="checkbox" id="form-favorite"><label for="form-favorite">Добавить это аниме в избранное</label></div></div>
+        </div>
+        <div class="modal-actions"><button type="button" id="btn-close-modal-2" class="btn">Отмена</button><button type="submit" class="btn btn-primary">Сохранить</button></div>
+      </form>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://unpkg.com/dexie@4.0.11/dist/dexie.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
