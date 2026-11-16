@@ -2,7 +2,7 @@
   "id": "./",
   "name": "AnimeVault — Anime Tracker",
   "short_name": "AnimeVault",
-  "description": "Личная библиотека аниме с импортом CSV, избранным и офлайн-доступом.",
+  "description": "Личная библиотека аниме с поиском по AniList, Shikimori и Kitsu, облачной синхронизацией и офлайн-доступом.",
   "lang": "ru",
   "start_url": "./",
   "scope": "./",

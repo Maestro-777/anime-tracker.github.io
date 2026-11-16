@@ -43,22 +43,31 @@ db.version(9).stores({
 });
 
 let applyingCloudData = false;
+const cloudApplyingRecords = new Set();
+async function withCloudRecord(recordUuid, operation) {
+  if(recordUuid) cloudApplyingRecords.add(recordUuid);
+  try { return await operation(); }
+  finally { if(recordUuid) cloudApplyingRecords.delete(recordUuid); }
+}
+function isCloudRecordApplying(obj) {
+  return applyingCloudData || (!!obj?.recordUuid && cloudApplyingRecords.has(obj.recordUuid));
+}
 db.anime.hook('creating', (_key, obj) => {
-  if (applyingCloudData) return;
+  if (isCloudRecordApplying(obj)) return;
   obj.recordUuid = obj.recordUuid || crypto.randomUUID();
   obj.syncUpdatedAt = new Date().toISOString();
   obj.syncDirty = 1;
   obj.posterPending = (obj.posterUrl || obj.apiPosterUrl) && !obj.posterDriveFileId ? 1 : 0;
 });
 db.anime.hook('updating', (mods, _key, obj) => {
-  if (applyingCloudData) return mods;
+  if (isCloudRecordApplying(obj)) return mods;
   const nextTime=Math.max(Date.now(),Date.parse(obj?.syncUpdatedAt||0)+1);
   const result={...mods,syncUpdatedAt:new Date(nextTime).toISOString(),syncDirty:1};
   if(Object.prototype.hasOwnProperty.call(mods,'posterUrl')||Object.prototype.hasOwnProperty.call(mods,'apiPosterUrl')) result.posterPending=1;
   return result;
 });
 db.anime.hook('deleting', (key, obj, tx) => {
-  if (applyingCloudData || obj?._remoteDelete || !obj?.recordUuid) return;
+  if (isCloudRecordApplying(obj) || obj?._remoteDelete || !obj?.recordUuid) return;
   return tx.table('sync_meta').put({key:`tombstone:${obj.recordUuid}`, value:{recordUuid:obj.recordUuid, deletedAt:new Date().toISOString()}});
 });
 
@@ -145,7 +154,8 @@ async function loadAnimeData() {
       const genreOK = filterGenre === 'Все' || (item.genres||[]).includes(filterGenre);
       const formatOK = filterFormat === 'Все' || item.format === filterFormat;
       const yearOK = filterYear === 'Все' || String(item.year||'') === filterYear;
-      const progressOK = filterProgress === 'Все' || (filterProgress === 'С постером' ? !!item.posterUrl : filterProgress === 'Без постера' ? !item.posterUrl : filterProgress === 'С метаданными' ? !!item.anilistId : !item.anilistId);
+      const hasMetadata=!!(item.anilistId||item.malId||item.kitsuId||item.metadataLookupStatus==='found');
+      const progressOK = filterProgress === 'Все' || (filterProgress === 'С постером' ? !!(item.posterUrl||item.posterDriveFileId||item.apiPosterUrl) : filterProgress === 'Без постера' ? !(item.posterUrl||item.posterDriveFileId||item.apiPosterUrl) : filterProgress === 'С метаданными' ? hasMetadata : !hasMetadata);
       return statusOK && genreOK && formatOK && yearOK && progressOK && (!query || haystack.includes(query));
     });
     items.sort((a,b) => (b.id || 0) - (a.id || 0));
@@ -348,13 +358,15 @@ async function fetchAnimeMetadataBatch(titles) {
   const result=new Map(); if(!unique.length) return result;
   const payload=await callAniListProxy({action:'metadata',titles:unique});
   for(const row of (Array.isArray(payload?.results)?payload.results:[])) {
-    if(row?.searchTitle&&row?.metadata?.anilistId) result.set(row.searchTitle,row.metadata);
+    if(row?.searchTitle) result.set(row.searchTitle,{metadata:row.metadata||null,status:row.status||'error',error:row.error||''});
   }
   return result;
 }
 async function fetchAnimeMetadata(title) {
   const result=await fetchAnimeMetadataBatch([title]);
-  return result.get(String(title||'').trim())||null;
+  const row=result.get(String(title||'').trim());
+  if(row?.status==='error') throw new Error(row.error||'Все источники поиска аниме недоступны.');
+  return row?.metadata||null;
 }
 async function fetchRussianDescription(item) {
   if(!supabaseClient) throw new Error('Supabase SDK недоступен для получения русского описания.');
@@ -370,8 +382,8 @@ async function fetchRussianDescription(item) {
 }
 async function fetchPosterUrl(title) {
   if (!title.trim()) return '';
-  try { const m = await fetchAnimeMetadata(title); return m?.apiPosterUrl || ''; }
-  catch (err) { console.warn('AniList lookup failed:', err); return ''; }
+  const metadata=await fetchAnimeMetadata(title);
+  return metadata?.apiPosterUrl || '';
 }
 const ENRICH_LOG_KEY = 'animevault-enrichment-log-v1';
 let enrichmentLog = [];
@@ -430,18 +442,44 @@ async function enrichOne(item, metadataMap=null) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,3);
   if (!candidates.length && !item.anilistId) return 'no_title';
   try {
-    let russianOnly=!item.anilistId&&(!!item.metadataUpdatedAt||item.metadataLookupStatus==='not_found');
+    const noMatchDue=item.metadataLookupStatus==='not_found'&&Date.parse(item.metadataRetryAt||0)<=Date.now();
+    let russianOnly=!item.anilistId&&(item.metadataLookupStatus==='found'||(item.metadataLookupStatus==='not_found'&&!noMatchDue));
     let meta=(item.anilistId||russianOnly)?{}:null;
     if(!item.anilistId&&!russianOnly) {
-      if(metadataMap) meta=candidates.map(title=>metadataMap.get(title)).find(Boolean)||null;
-      else {const found=await fetchAnimeMetadataBatch(candidates);meta=candidates.map(title=>found.get(title)).find(Boolean)||null;}
+      let lookup=null;
+      if(metadataMap) lookup=candidates.map(title=>metadataMap.get(title)).find(row=>row&&(row.metadata||row.status==='error'||row.status==='not_found'))||null;
+      else {
+        const found=await fetchAnimeMetadataBatch(candidates);
+        lookup=candidates.map(title=>found.get(title)).find(row=>row&&(row.metadata||row.status==='error'||row.status==='not_found'))||null;
+      }
+      if(lookup?.status==='error') throw new Error(lookup.error||'Все источники API недоступны.');
+      meta=lookup?.metadata||null;
       if(!meta) { russianOnly=true;meta={}; }
     }
     const checkedAt=new Date().toISOString();
-    const patch={...meta,metadataUpdatedAt:meta.anilistId?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:null,metadataLookupStatus:russianOnly?'not_found':'found'};
+    const performedLookup=!item.anilistId&&!russianOnly;
+    const lookupFound=!!(meta.metadataProvider||meta.anilistId||item.metadataLookupStatus==='found'||item.anilistId);
+    const nextNoMatchRetry=new Date(Date.now()+30*24*60*60*1000).toISOString();
+    const patch={...meta,
+      metadataUpdatedAt:performedLookup?checkedAt:(item.metadataUpdatedAt||''),
+      metadataLookupAttemptedAt:performedLookup?checkedAt:(item.metadataLookupAttemptedAt||''),
+      metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+(performedLookup?1:0),
+      metadataRetryAt:lookupFound?null:(performedLookup?nextNoMatchRetry:(item.metadataRetryAt||nextNoMatchRetry)),
+      metadataLookupStatus:lookupFound?'found':'not_found',
+      metadataLookupError:''
+    };
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
-    if(!item.descriptionRu || item.descriptionRuStatus==='error') {
+    const shikimoriDescription=meta.metadataProvider==='Shikimori'?meta.description:(item.metadataProvider==='Shikimori'?item.description:'');
+    if(!item.descriptionRu && /[А-Яа-яЁё]/.test(String(shikimoriDescription||''))) {
+      patch.descriptionRu=String(shikimoriDescription).slice(0,4000);
+      patch.descriptionRuSource='shikimori';
+      patch.descriptionRuStatus='found';
+      patch.descriptionRuUpdatedAt=new Date().toISOString();
+      patch.descriptionRuRetryAt=null;
+      patch.descriptionRuError='';
+    }
+    if(!patch.descriptionRu && (!item.descriptionRu || item.descriptionRuStatus==='error')) {
       try {
         const ru=await fetchRussianDescription(merged);
         if(ru?.descriptionRu) {
@@ -450,7 +488,8 @@ async function enrichOne(item, metadataMap=null) {
           patch.descriptionRuStatus='found';
           patch.descriptionRuUpdatedAt=new Date().toISOString();
           patch.descriptionRuRetryAt=null;
-        } else { patch.descriptionRuStatus='not_found'; patch.descriptionRuRetryAt=null; }
+          patch.descriptionRuError='';
+        } else { patch.descriptionRuStatus='not_found'; patch.descriptionRuRetryAt=null; patch.descriptionRuError=''; }
       } catch(err) {
         const attempts=(Number(item.descriptionRuAttempts)||0)+1;
         patch.descriptionRuStatus='error';
@@ -473,6 +512,26 @@ async function enrichOne(item, metadataMap=null) {
     return 'error';
   }
 }
+async function runApiDiagnostics() {
+  const button=$('btn-api-diagnostics'), output=$('api-diagnostics-result');
+  if(button){button.disabled=true;button.textContent='Проверяем…';}
+  if(output)output.textContent='Проверяем доступность AniList, Shikimori и Kitsu…';
+  try {
+    const result=await callAniListProxy({action:'diagnostics'});
+    const rows=Array.isArray(result.providers)?result.providers:[];
+    const lines=rows.map(row=>`${row.ok?'✓':'✕'} ${row.provider}: ${row.status||'сеть недоступна'} · ${row.latencyMs} мс · ${row.detail||''}`);
+    if(output)output.textContent=`Проверка от ${new Date(result.checkedAt||Date.now()).toLocaleTimeString('ru-RU')}\n${lines.join('\n')}`;
+    addEnrichmentLog(`Диагностика API: ${rows.map(x=>`${x.provider} ${x.status||'network'}`).join(', ')}`,rows.every(x=>x.ok)?'success':'error');
+    showToast(rows.some(x=>x.ok)?'Проверка API завершена':'Все API сейчас недоступны',rows.some(x=>x.ok)?'success':'error');
+  } catch(error) {
+    const message=String(error?.message||error);
+    if(output)output.textContent=`Ошибка диагностики: ${message}`;
+    addEnrichmentLog(`Ошибка диагностики API: ${message}`,'error');
+    showToast(message,'error');
+  } finally {
+    if(button){button.disabled=false;button.textContent='Проверить API';}
+  }
+}
 async function enrichLibrary() {
   if (enrichmentRunning) return;
   if (!navigator.onLine) {
@@ -486,8 +545,11 @@ async function enrichLibrary() {
   const now=Date.now();
   const queue = all.filter(x => {
     const hasTitle=[x.titleOrig,x.titleRu,x.titleAlt].some(v=>String(v||'').trim());
-    const metadataDue=!x.anilistId && x.metadataLookupStatus!=='not_found' && hasTitle &&
-      (!x.metadataLookupAttemptedAt || (x.metadataLookupStatus==='error' && Date.parse(x.metadataRetryAt||0)<=now));
+    const metadataDue=!x.anilistId && hasTitle && (
+      (!x.metadataLookupAttemptedAt && x.metadataLookupStatus!=='found' && x.metadataLookupStatus!=='not_found') ||
+      (x.metadataLookupStatus==='error' && Date.parse(x.metadataRetryAt||0)<=now) ||
+      (x.metadataLookupStatus==='not_found' && Date.parse(x.metadataRetryAt||0)<=now)
+    );
     const hasRussianSource=!!(x.anilistId || x.description || x.metadataUpdatedAt || x.metadataLookupStatus==='not_found');
     const descriptionDue=!x.descriptionRu && x.descriptionRuStatus!=='not_found' && hasRussianSource &&
       (x.descriptionRuStatus!=='error' || Date.parse(x.descriptionRuRetryAt||0)<=now);
@@ -513,25 +575,26 @@ async function enrichLibrary() {
       if(enrichmentCancel) break;
       if(!navigator.onLine){addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.','error');break;}
       const batch=queue.slice(i,i+3);
-      const needAni=batch.filter(x=>!x.anilistId&&!x.metadataUpdatedAt&&x.metadataLookupStatus!=='not_found');
+      const needAni=batch.filter(x=>!x.anilistId&&x.metadataLookupStatus!=='found'&&(x.metadataLookupStatus!=='not_found'||Date.parse(x.metadataRetryAt||0)<=Date.now()));
       const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean).slice(0,3)))];
       let metadataMap=new Map(),metadataBatchError=null;
+      const needAniIds=new Set(needAni.map(x=>x.id));
       if(titles.length) {
         try { metadataMap=await fetchAnimeMetadataBatch(titles.slice(0,9)); }
-        catch(err) { metadataBatchError=err; console.warn('AniList batch failed:',err); }
+        catch(err) { metadataBatchError=err; console.warn('Metadata provider batch failed:',err); }
       }
       if(metadataBatchError?.retryAfter) await new Promise(resolve=>setTimeout(resolve,metadataBatchError.retryAfter));
       for(const item of batch) {
         if(enrichmentCancel) break;
         let result;
-        if(!item.anilistId&&metadataBatchError) {
+        if(needAniIds.has(item.id)&&metadataBatchError) {
           const attempts=(Number(item.metadataLookupAttempts)||0)+1,nowIso=new Date().toISOString();
           await db.anime.update(item.id,{metadataLookupStatus:'error',metadataLookupAttemptedAt:nowIso,metadataLookupAttempts:attempts,metadataRetryAt:new Date(Date.now()+metadataRetryDelay(attempts,metadataBatchError)).toISOString(),metadataLookupError:String(metadataBatchError?.message||metadataBatchError).slice(0,180)});
           result='error';
         } else result=await enrichOne(item,metadataMap);
         done++;
         if(result==='ok'){found++;addEnrichmentLog(`✓ Обработано: ${item.titleRu||item.titleOrig}`,'success');}
-        else if(result==='miss'){missed++;addEnrichmentLog(`— Не найдено в AniList: ${item.titleRu||item.titleOrig}`,'muted');}
+        else if(result==='miss'){missed++;addEnrichmentLog(`— Не найдено в каталогах API: ${item.titleRu||item.titleOrig}`,'muted');}
         else if(result==='no_title'){missed++;addEnrichmentLog(`Пропуск записи без названия (ID ${item.id}).`,'muted');}
         else {errors++;const failed=await db.anime.get(item.id);addEnrichmentLog(`Ошибка: ${item.titleRu||item.titleOrig} — ${failed?.metadataLookupError||failed?.descriptionRuError||'временная ошибка API'}`,'error');}
         $('enrich-done').textContent=done.toLocaleString('ru-RU');
@@ -665,7 +728,7 @@ function renderStatistics() {
     $('watch-chart').innerHTML=`${watchByStatus.map(x=>`<div class="bar-row"><span>${escapeHTML(x.status)}</span><div class="bar-track"><div class="bar-fill" style="width:${x.episodes/maxStatusEpisodes*100}%"></div></div><b>${x.episodes} сер.</b></div><div style="margin:-6px 0 9px 109px;color:#92929c;font-size:11px">${hours(x.minutes)}</div>`).join('')}<p style="color:#92929c;font-size:12px">Серии и часы показаны отдельно по каждому статусу. Для завершённых учитывается полное число серий из API, для остальных — отмеченный прогресс.</p>`;
     const formats={}; for(const x of items) if(x.format) formats[x.format]=(formats[x.format]||0)+1;
     $('format-chart').innerHTML=Object.keys(formats).length?Object.entries(formats).map(([name,n])=>`<div class="bar-row"><span>${escapeHTML(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${n/Math.max(1,...Object.values(formats))*100}%"></div></div><b>${n}</b></div>`).join(''):'<p style="color:#92929c">Пока нет данных. Запустите массовое обновление через AniList.</p>';
-    const withMeta=items.filter(x=>x.anilistId).length, withPoster=items.filter(x=>x.posterUrl).length;
+    const withMeta=items.filter(x=>x.anilistId||x.malId||x.kitsuId||x.metadataLookupStatus==='found').length, withPoster=items.filter(x=>x.posterUrl||x.posterDriveFileId||x.apiPosterUrl).length;
     $('metadata-chart').innerHTML=`<div class="bar-row"><span>Метаданные API</span><div class="bar-track"><div class="bar-fill" style="width:${withMeta/total*100}%"></div></div><b>${withMeta}</b></div><div class="bar-row"><span>Постеры</span><div class="bar-track"><div class="bar-fill" style="width:${withPoster/total*100}%"></div></div><b>${withPoster}</b></div><p style="color:#92929c;font-size:12px">Время считается приблизительно: длительность серии × число серий. Для незавершённых учитываются только отмеченные серии.</p>`;
   });
 }
@@ -674,14 +737,19 @@ async function searchPoster() {
   if (!title) { showToast('Сначала укажите название аниме', 'error'); return; }
   els.posterSearch.disabled = true;
   els.posterSearch.textContent = 'Ищем…';
-  const url = await fetchPosterUrl(title);
-  els.posterSearch.disabled = false;
-  els.posterSearch.textContent = 'Найти через AniList';
-  if (url) {
-    els.poster.value = url;
-    updatePosterPreview();
-    showToast('Постер найден. Сохраните карточку.');
-  } else showToast('Постер не найден. Можно вставить ссылку вручную.', 'error');
+  try {
+    const url = await fetchPosterUrl(title);
+    if (url) {
+      els.poster.value = url;
+      updatePosterPreview();
+      showToast('Постер найден через API. Сохраните карточку.');
+    } else showToast('Совпадение найдено, но у него нет постера.', 'error');
+  } catch(error) {
+    showToast(`Поиск постера: ${error?.message||'ошибка API'}`, 'error');
+  } finally {
+    els.posterSearch.disabled = false;
+    els.posterSearch.textContent = 'Найти через API';
+  }
 }
 async function handleFormSubmit(event) {
   event.preventDefault();
@@ -690,7 +758,10 @@ async function handleFormSubmit(event) {
   const id = Number(els.editId.value) || null;
   const existing = id ? await db.anime.get(id) : null;
   let posterValue = safeURL(els.poster.value);
-  if (!posterValue && !existing) posterValue = await fetchPosterUrl(els.titleOrig.value.trim() || titleRu);
+  if (!posterValue && !existing) {
+    try { posterValue = await fetchPosterUrl(els.titleOrig.value.trim() || titleRu); }
+    catch(error) { console.warn('Auto poster lookup skipped:',error); }
+  }
   const data = {
     titleRu,
     titleOrig: els.titleOrig.value.trim(),
@@ -787,7 +858,7 @@ function parseCSV(text) {
     episode: find('текущая серия','серия','episode'),
     link: find('ссылка на просмотр','ссылка','watchlink','watch link'),
     poster: find('ссылка на постер','постер','poster'),
-    anilistId: find('anilist id'), malId:find('mal id'), apiTitle:find('название api'), description: find('описание','description'), descriptionRu:find('описание на русском','русское описание','описание ru','description ru'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
+    anilistId: find('anilist id'), malId:find('mal id'), shikimoriId:find('shikimori id'), kitsuId:find('kitsu id'), provider:find('источник api','провайдер api','metadata provider'), apiTitle:find('название api'), description: find('описание','description'), descriptionRu:find('описание на русском','русское описание','описание ru','description ru'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
   };
   if (idx.ru < 0) throw new Error('Не найден столбец с русским названием.');
   const result=[];
@@ -815,7 +886,7 @@ function parseCSV(text) {
       currentEpisode: idx.episode >= 0 ? Math.max(0,parseInt(get('episode'),10)||0) : null,
       watchLink: idx.link >= 0 ? safeURL(get('link')) : '',
       posterUrl: idx.poster >= 0 ? safeURL(get('poster')) : '',
-      anilistId: get('anilistId') ? Number(get('anilistId')) : null, malId:get('malId')?Number(get('malId')):null, titleApi:get('apiTitle'), description:get('description'), descriptionRu:get('descriptionRu'), totalEpisodes:idx.totalEpisodes>=0?(parseInt(get('totalEpisodes'),10)||null):null, episodeDuration:idx.duration>=0?(parseInt(get('duration'),10)||null):null, format:get('format'), year:idx.year>=0?(parseInt(get('year'),10)||null):null, score:idx.score>=0?(parseInt(get('score'),10)||null):null, genres:get('genres')?get('genres').split(/[,|]/).map(x=>x.trim()).filter(Boolean):[], apiPosterUrl:idx.apiPoster>=0?safeURL(get('apiPoster')):'', metadataUpdatedAt:get('metadataUpdated'), metadataLookupAttemptedAt:get('metadataAttempt'), metadataLookupStatus:get('metadataLookupStatus')
+      anilistId: get('anilistId') ? Number(get('anilistId')) : null, malId:get('malId')?Number(get('malId')):null, shikimoriId:get('shikimoriId')?Number(get('shikimoriId')):null, kitsuId:get('kitsuId'), metadataProvider:get('provider'), titleApi:get('apiTitle'), description:get('description'), descriptionRu:get('descriptionRu'), totalEpisodes:idx.totalEpisodes>=0?(parseInt(get('totalEpisodes'),10)||null):null, episodeDuration:idx.duration>=0?(parseInt(get('duration'),10)||null):null, format:get('format'), year:idx.year>=0?(parseInt(get('year'),10)||null):null, score:idx.score>=0?(parseInt(get('score'),10)||null):null, genres:get('genres')?get('genres').split(/[,|]/).map(x=>x.trim()).filter(Boolean):[], apiPosterUrl:idx.apiPoster>=0?safeURL(get('apiPoster')):'', metadataUpdatedAt:get('metadataUpdated'), metadataLookupAttemptedAt:get('metadataAttempt'), metadataLookupStatus:get('metadataLookupStatus')
     });
   }
   return result;
@@ -850,7 +921,7 @@ async function importAnime(items) {
           // Empty import values must never erase manually added poster/link.
           posterUrl: incoming.posterUrl || old.posterUrl || '',
           watchLink: incoming.watchLink || old.watchLink || '',
-          anilistId: incoming.anilistId || old.anilistId || null, malId:incoming.malId || old.malId || null, titleApi:incoming.titleApi || old.titleApi || '', description: incoming.description || old.description || '', descriptionRu:incoming.descriptionRu||old.descriptionRu||'',
+          anilistId: incoming.anilistId || old.anilistId || null, malId:incoming.malId || old.malId || null, shikimoriId:incoming.shikimoriId || old.shikimoriId || null, kitsuId:incoming.kitsuId || old.kitsuId || '', metadataProvider:incoming.metadataProvider || old.metadataProvider || '', titleApi:incoming.titleApi || old.titleApi || '', description: incoming.description || old.description || '', descriptionRu:incoming.descriptionRu||old.descriptionRu||'',
           totalEpisodes: incoming.totalEpisodes || old.totalEpisodes || null, episodeDuration: incoming.episodeDuration || old.episodeDuration || null,
           format: incoming.format || old.format || '', year: incoming.year || old.year || null, score: incoming.score || old.score || null, genres: incoming.genres || old.genres || [], apiPosterUrl:incoming.apiPosterUrl || old.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || old.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || old.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || old.metadataLookupStatus || ''
         };
@@ -865,7 +936,7 @@ async function importAnime(items) {
           titleRu:incoming.titleRu, titleOrig:incoming.titleOrig, titleAlt:incoming.titleAlt,
           status:incoming.status || 'В планах', favorite:incoming.favorite ? 1 : 0,
           currentEpisode:incoming.currentEpisode || 0, posterUrl:incoming.posterUrl || '',
-          watchLink:incoming.watchLink || '', anilistId:incoming.anilistId || null, malId:incoming.malId || null, titleApi:incoming.titleApi || '', description:incoming.description || '', descriptionRu:incoming.descriptionRu||'', totalEpisodes:incoming.totalEpisodes || null, episodeDuration:incoming.episodeDuration || null, format:incoming.format || '', year:incoming.year || null, score:incoming.score || null, genres:incoming.genres || [], apiPosterUrl:incoming.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || ''
+          watchLink:incoming.watchLink || '', anilistId:incoming.anilistId || null, malId:incoming.malId || null, shikimoriId:incoming.shikimoriId || null, kitsuId:incoming.kitsuId || '', metadataProvider:incoming.metadataProvider || '', titleApi:incoming.titleApi || '', description:incoming.description || '', descriptionRu:incoming.descriptionRu||'', totalEpisodes:incoming.totalEpisodes || null, episodeDuration:incoming.episodeDuration || null, format:incoming.format || '', year:incoming.year || null, score:incoming.score || null, genres:incoming.genres || [], apiPosterUrl:incoming.apiPosterUrl || '', metadataUpdatedAt:incoming.metadataUpdatedAt || '', metadataLookupAttemptedAt:incoming.metadataLookupAttemptedAt || '', metadataLookupStatus:incoming.metadataLookupStatus || ''
         };
         const id=await db.anime.add(item);
         item.id=id; exact.set(duplicateKey(item),item); byRu.set(norm(item.titleRu),item);
@@ -903,11 +974,11 @@ function csvEscape(value) {
 async function handleCSVExport() {
   const items=await db.anime.toArray();
   if (!items.length) { showToast('Библиотека пуста', 'error'); return; }
-  const headers=['Русское название','Оригинальное название','Альтернативные названия','Добавлено в избранное','Статус просмотра','Текущая серия','Ссылка на просмотр','Ссылка на постер','AniList ID','MAL ID','Название API','Описание','Описание на русском','Всего серий','Длительность серии (мин)','Формат','Год','Оценка','Жанры','Постер API','Дата обновления API','Дата попытки поиска AniList','Статус поиска AniList'];
+  const headers=['Русское название','Оригинальное название','Альтернативные названия','Добавлено в избранное','Статус просмотра','Текущая серия','Ссылка на просмотр','Ссылка на постер','AniList ID','MAL ID','Shikimori ID','Kitsu ID','Источник API','Название API','Описание','Описание на русском','Всего серий','Длительность серии (мин)','Формат','Год','Оценка','Жанры','Постер API','Дата обновления API','Дата попытки поиска AniList','Статус поиска AniList'];
   const rows=[headers.join(';')];
   for (const x of items) rows.push([
     x.titleRu,x.titleOrig,x.titleAlt,Number(x.favorite)===1?'Добавлено':'Не добавлено',
-    normalizeStatus(x.status),x.currentEpisode||0,x.watchLink,x.posterUrl,x.anilistId||'',x.malId||'',x.titleApi||'',x.description||'',x.descriptionRu||'',x.totalEpisodes||'',x.episodeDuration||'',x.format||'',x.year||'',x.score||'',(x.genres||[]).join(', '),x.apiPosterUrl||'',x.metadataUpdatedAt||'',x.metadataLookupAttemptedAt||'',x.metadataLookupStatus||''
+    normalizeStatus(x.status),x.currentEpisode||0,x.watchLink,x.posterUrl,x.anilistId||'',x.malId||'',x.shikimoriId||'',x.kitsuId||'',x.metadataProvider||'',x.titleApi||'',x.description||'',x.descriptionRu||'',x.totalEpisodes||'',x.episodeDuration||'',x.format||'',x.year||'',x.score||'',(x.genres||[]).join(', '),x.apiPosterUrl||'',x.metadataUpdatedAt||'',x.metadataLookupAttemptedAt||'',x.metadataLookupStatus||''
   ].map(csvEscape).join(';'));
   const blob=new Blob(['\uFEFF'+rows.join('\r\n')],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);
@@ -1006,11 +1077,29 @@ function clearGoogleDriveSession(revoke=false) {
 }
 async function driveFetch(url,options={}) {
   if(!driveAccessToken || Date.now()>driveTokenExpiresAt-30000) throw new Error('Сеанс Google Drive истёк. Нажмите «Подключить Google Drive» ещё раз.');
+  const method=String(options.method||'GET').toUpperCase();
   const headers=new Headers(options.headers||{}); headers.set('Authorization',`Bearer ${driveAccessToken}`);
-  const response=await fetch(url,{...options,headers});
-  if(response.status===401) { clearGoogleDriveSession(false); throw new Error('Google Drive завершил сеанс. Подключите его повторно.'); }
-  if(!response.ok) { const detail=await response.text().catch(()=>''); throw new Error(`Google Drive HTTP ${response.status}: ${detail.slice(0,240)||response.statusText}`); }
-  return response;
+  for(let attempt=0;attempt<3;attempt++) {
+    let response;
+    try { response=await fetch(url,{...options,headers}); }
+    catch(error) {
+      if(attempt===2||method==='POST') throw error;
+      await new Promise(resolve=>setTimeout(resolve,500*2**attempt));
+      continue;
+    }
+    if(response.status===401) { clearGoogleDriveSession(false); throw new Error('Google Drive завершил сеанс. Подключите его повторно.'); }
+    if(response.ok) return response;
+    const detail=await response.text().catch(()=>'');
+    const error=new Error(`Google Drive HTTP ${response.status}: ${detail.slice(0,240)||response.statusText}`);
+    error.status=response.status;
+    if(method!=='POST'&&[408,425,429,500,502,503,504].includes(response.status)&&attempt<2) {
+      const retryAfter=Number(response.headers.get('Retry-After')||0);
+      await new Promise(resolve=>setTimeout(resolve,retryAfter>0?Math.min(15000,retryAfter*1000):600*2**attempt));
+      continue;
+    }
+    throw error;
+  }
+  throw new Error('Google Drive request failed after retries.');
 }
 async function ensureGoogleDriveFolder() {
   if(driveFolderId) return driveFolderId;
@@ -1028,16 +1117,22 @@ async function connectGoogleDrive() {
     cloudStatus('Google Drive подключён. Проверяем библиотеку и переносим постеры…','success');
     if(syncBusy) await new Promise(resolve=>{const wait=()=>syncBusy?setTimeout(wait,250):resolve();wait();});
     await syncCloudNow(); await loadAnimeData();
-  } catch(error) { cloudStatus(error?.message||'Не удалось подключить Google Drive. Проверьте OAuth и тестовый доступ.','error'); }
+  } catch(error) {
+    const message=String(error?.message||error||'Не удалось подключить Google Drive.');
+    const guidance=/origin|invalid_client|not registered/i.test(message)
+      ? 'Google OAuth: добавьте в Google Cloud → Credentials → OAuth Client → Authorized JavaScript origins адрес https://maestro-777.github.io. Список Test users — отдельная настройка и не заменяет origin.'
+      : message;
+    cloudStatus(guidance,'error');
+  }
   finally { if(button) button.disabled=false; }
 }
 async function disconnectGoogleDrive() {
   clearGoogleDriveSession(true);
   cloudStatus('Google Drive отключён. Локальный кэш постеров сохранён.','info');
 }
-async function fetchPosterFromAniList(sourceUrl) {
+async function fetchPosterFromSource(sourceUrl) {
   const {data:{session}}=await supabaseClient.auth.getSession();
-  if(!session?.access_token) throw new Error('Сначала войдите в AnimeVault через GitHub.');
+  if(!session?.access_token) throw new Error('Сначала войдите в аккаунт AnimeVault.');
   const response=await fetch(`${SUPABASE_URL}/functions/v1/fetch-poster`,{
     method:'POST',
     headers:{'Authorization':`Bearer ${session.access_token}`,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
@@ -1052,9 +1147,17 @@ async function findDrivePoster(name,folderId) {
   return data.files?.[0]||null;
 }
 async function uploadBlobToDrive(blob,name,mimeType,folderId,existingFileId=null) {
-  const existing=existingFileId?{id:existingFileId}:await findDrivePoster(name,folderId), fields='id,name,mimeType,size';
-  if(existing?.id) {
-    return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existing.id)}?uploadType=media&fields=${fields}`,{method:'PATCH',headers:{'Content-Type':mimeType},body:blob})).json();
+  const fields='id,name,mimeType,size';
+  if(existingFileId) {
+    try {
+      return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingFileId)}?uploadType=media&fields=${fields}`,{method:'PATCH',headers:{'Content-Type':mimeType},body:blob})).json();
+    } catch(error) {
+      if(Number(error?.status)!==404) throw error;
+      console.warn('AnimeVault: старый файл постера не найден в Google Drive, создаём новый.',existingFileId);
+    }
+  } else {
+    const existing=await findDrivePoster(name,folderId);
+    if(existing?.id) return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existing.id)}?uploadType=media&fields=${fields}`,{method:'PATCH',headers:{'Content-Type':mimeType},body:blob})).json();
   }
   const boundary=`animevault_${crypto.randomUUID().replace(/-/g,'')}`;
   const metadata={name,mimeType,parents:[folderId]};
@@ -1102,8 +1205,8 @@ function addPosterLog(entry){ posterLogEntries.push({...entry,time:new Date().to
 function posterFailureReason(error,stage){
   const msg=String(error?.message||error||'Неизвестная ошибка');
   if(stage==='Источник' && (error instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(msg))) return 'Браузер не смог прочитать изображение. Возможны CORS-ограничение источника, блокировка сети или недоступный сервер; точную причину браузер не раскрывает.';
-  if(/row.level security|permission|unauthorized|not authorized|403/i.test(msg)) return 'Supabase Storage отклонил доступ. Проверьте bucket и Storage policies для папки пользователя.';
-  if(/bucket.*not found|not found/i.test(msg)) return 'Bucket animevault-posters не найден. Выполните актуальный SUPABASE_SETUP.sql.';
+  if(/row.level security|permission|unauthorized|not authorized|403/i.test(msg)) return 'Google Drive или серверный прокси отклонил доступ. Переподключите Google Drive и проверьте вход в AnimeVault.';
+  if(/bucket.*not found|not found/i.test(msg)) return 'Постер не найден в выбранном источнике. Проверьте ссылку или повторите поиск через API.';
   return msg;
 }
 function cloudStatus(message, type='info') {
@@ -1182,8 +1285,8 @@ async function uploadPosterToCloud(item) {
   try {
     if(!driveAccessToken) throw new Error('Google Drive не подключён.');
     if(!sourceUrl||!sourceUrl.startsWith('https://')) throw new Error('Нужен безопасный HTTPS-адрес постера.');
-    stage='Скачивание через Supabase Edge Function';
-    blob=await fetchPosterFromAniList(sourceUrl);
+    stage='Скачивание через защищённый серверный прокси';
+    blob=await fetchPosterFromSource(sourceUrl);
     const type=(blob.type||'').split(';')[0].toLowerCase();
     const allowed=['image/jpeg','image/png','image/webp','image/gif','image/avif'];
     if(!allowed.includes(type)) throw new Error(`Источник вернул неподдерживаемый тип изображения: ${type||'не указан'}`);
@@ -1214,11 +1317,8 @@ async function uploadLibraryPosters() {
   const seeded=await db.sync_meta.get('posterQueueSeeded');
   if(!seeded) {
     const all=await db.anime.toArray();
-    applyingCloudData=true;
-    try {
-      for(const item of all) if((item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.posterPending!==1)
-        await db.anime.update(item.id,{posterPending:1});
-    } finally { applyingCloudData=false; }
+    for(const item of all) if((item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.posterPending!==1)
+      await withCloudRecord(item.recordUuid,()=>db.anime.update(item.id,{posterPending:1}));
     await db.sync_meta.put({key:'posterQueueSeeded',value:new Date().toISOString()});
   }
   const pending=await db.anime.where('posterPending').equals(1).toArray();
@@ -1226,9 +1326,7 @@ async function uploadLibraryPosters() {
   for(const item of pending) {
     if(item.posterUrl||item.apiPosterUrl) queue.push(item);
     else {
-      applyingCloudData=true;
-      try { await db.anime.update(item.id,{posterPending:0}); }
-      finally { applyingCloudData=false; }
+      await withCloudRecord(item.recordUuid,()=>db.anime.update(item.id,{posterPending:0}));
     }
   }
   let uploaded=0,failed=0,done=0;
@@ -1242,9 +1340,7 @@ async function uploadLibraryPosters() {
       if(result.status==='uploaded') uploaded++;
       else if(result.status==='failed') failed++;
       else {
-        applyingCloudData=true;
-        try { await db.anime.update(group[j].id,{posterPending:0}); }
-        finally { applyingCloudData=false; }
+        await withCloudRecord(group[j].recordUuid,()=>db.anime.update(group[j].id,{posterPending:0}));
       }
     }
     done+=results.length;
@@ -1275,7 +1371,8 @@ async function retryCloudRequest(operation,label='Supabase') {
 }
 async function readRemoteChanges(cursor) {
   const rows=[];
-  const since=cursor?new Date(Math.max(0,Date.parse(cursor)-2000)).toISOString():null;
+  const cursorMs=cursor?Date.parse(cursor):NaN;
+  const since=Number.isFinite(cursorMs)?new Date(Math.max(0,cursorMs-2000)).toISOString():null;
   for(let offset=0;;offset+=1000) {
     const data=await retryCloudRequest(async()=>{
       let query=supabaseClient.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).order('record_id',{ascending:true}).range(offset,offset+999);
@@ -1353,29 +1450,30 @@ async function syncCloudNow() {
     let pulled=0;
     for(const row of remoteRows) {
       if(locallyDeletedIds.has(row.record_id)) continue;
-      const item=await db.anime.where('recordUuid').equals(row.record_id).first();
-      if(!item) {
-        if(!row.deleted&&row.payload&&typeof row.payload==='object') {
-          applyingCloudData=true;
-          try {
-            const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;copy.posterPending=(copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId?1:0;
-            await db.anime.add(copy);pulled++;
-          } finally { applyingCloudData=false; }
+      await db.transaction('rw',db.anime,async()=>{
+        const item=await db.anime.where('recordUuid').equals(row.record_id).first();
+        const remoteUpdated=Date.parse(row.updated_at||0);
+        const localUpdated=item?Date.parse(item.syncUpdatedAt||0):NaN;
+        if(!item) {
+          if(!row.deleted&&row.payload&&typeof row.payload==='object') {
+            const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;
+            copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;
+            copy.posterPending=(copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId?1:0;
+            await withCloudRecord(row.record_id,()=>db.anime.add(copy));pulled++;
+          }
+          return;
         }
-        continue;
-      }
-      const remoteUpdated=Date.parse(row.updated_at||0),localUpdated=Date.parse(item.syncUpdatedAt||0);
-      if(row.deleted?remoteUpdated>=localUpdated:remoteUpdated>localUpdated) {
-        applyingCloudData=true;
-        try {
-          if(row.deleted){await db.anime.delete(item.id);}
+        if(row.deleted?remoteUpdated>=localUpdated:remoteUpdated>localUpdated) {
+          if(row.deleted) await withCloudRecord(row.record_id,()=>db.anime.delete(item.id));
           else if(row.payload&&typeof row.payload==='object') {
-            const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;copy.posterPending=copy.posterDriveFileId?0:((copy.posterUrl!==item.posterUrl||copy.apiPosterUrl!==item.apiPosterUrl)?((copy.posterUrl||copy.apiPosterUrl)?1:0):Number(item.posterPending)||0);
-            await db.anime.update(item.id,copy);
+            const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;
+            copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;
+            copy.posterPending=copy.posterDriveFileId?0:((copy.posterUrl!==item.posterUrl||copy.apiPosterUrl!==item.apiPosterUrl)?((copy.posterUrl||copy.apiPosterUrl)?1:0):Number(item.posterPending)||0);
+            await withCloudRecord(row.record_id,()=>db.anime.update(item.id,copy));
           }
           pulled++;
-        } finally { applyingCloudData=false; }
-      }
+        }
+      });
     }
     let posterResult={uploaded:0,failed:0,total:0,skipped:true};
     if(driveAccessToken) posterResult=await uploadLibraryPosters();
@@ -1395,12 +1493,11 @@ async function syncCloudNow() {
       const chunk=upserts.slice(i,i+100);
       await retryCloudRequest(()=>supabaseClient.from('animevault_records').upsert(chunk,{onConflict:'owner_id,record_id'}));
       for(const sent of chunk) {
-        const current=await db.anime.where('recordUuid').equals(sent.record_id).first();
-        if(current&&current.syncUpdatedAt===sent.updated_at) {
-          applyingCloudData=true;
-          try { await db.anime.update(current.id,{syncDirty:0}); }
-          finally { applyingCloudData=false; }
-        }
+        await db.transaction('rw',db.anime,async()=>{
+          const current=await db.anime.where('recordUuid').equals(sent.record_id).first();
+          if(current&&current.syncUpdatedAt===sent.updated_at)
+            await withCloudRecord(sent.record_id,()=>db.anime.update(current.id,{syncDirty:0}));
+        });
       }
     }
     const remoteMax=remoteRows.reduce((max,row)=>!max||Date.parse(row.updated_at)>Date.parse(max)?row.updated_at:max,cursor||null);
@@ -1472,6 +1569,7 @@ function bindEvents() {
   $('menu-update').addEventListener('click',()=>{document.querySelector('.manage-menu').open=false;switchStats('update');});
   $('mobile-update').addEventListener('click',()=>switchStats('update'));
   $('btn-enrich-start').addEventListener('click',enrichLibrary);
+  $('btn-api-diagnostics')?.addEventListener('click',runApiDiagnostics);
   $('btn-retry-enrich-errors')?.addEventListener('click',async()=>{
     const failed=await db.anime.filter(x=>x.metadataLookupStatus==='error'||x.descriptionRuStatus==='error').toArray();
     const due=new Date(0).toISOString();
@@ -1540,6 +1638,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.3.6 · Google Drive Posters';
+  $('app-version').textContent='v1.4.0 · Multi-API · Google Drive';
 }
 document.addEventListener('DOMContentLoaded',init);

@@ -88,9 +88,9 @@ Deno.serve(async (request: Request) => {
     const malId=Number(body?.malId)||null;
     const original=cleanDescription(body?.description);
     if(!title&&!original) return json({descriptionRu:"",source:"not_found"},200,cors);
-    let shikimoriDescription="",shikimoriFailed=false;
+    let shikimoriDescription="",shikimoriFailed=false,shikimoriError="";
     try { shikimoriDescription=await findShikimoriDescription(title,malId); }
-    catch(error) { shikimoriFailed=true;console.warn("AnimeVault Shikimori lookup:",error); }
+    catch(error) { shikimoriFailed=true;shikimoriError=error instanceof Error?error.message:String(error);console.warn("AnimeVault Shikimori lookup:",shikimoriError); }
     if(shikimoriDescription && /[А-Яа-яЁё]/.test(shikimoriDescription)) {
       return json({descriptionRu:shikimoriDescription,source:"shikimori"},200,cors);
     }
@@ -99,13 +99,14 @@ Deno.serve(async (request: Request) => {
     }
     const textToTranslate=shikimoriDescription||original;
     if(!textToTranslate) {
-      if(shikimoriFailed) throw new Error("Shikimori временно недоступен; повторите обработку позже.");
+      if(shikimoriFailed) throw new Error(`Shikimori не ответил (${shikimoriError}), а исходного описания для перевода нет.`);
       return json({descriptionRu:"",source:"not_found"},200,cors);
     }
     const descriptionRu=await translateToRussian(textToTranslate);
     return json({descriptionRu,source:shikimoriDescription?"translated_shikimori":"google_translate"},200,cors);
   } catch(error) {
     const message=error instanceof Error?error.message:"Unexpected description lookup error";
+    console.error("AnimeVault description lookup failed:",message);
     return json({error:message},503,cors);
   }
 });

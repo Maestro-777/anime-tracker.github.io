@@ -1,4 +1,4 @@
--- AnimeVault v1.3.3 — secure per-user cloud storage
+-- AnimeVault v1.4.0 — secure per-user cloud sync (Google Drive poster files)
 -- Run once in Supabase Dashboard -> SQL Editor -> New query.
 
 create table if not exists public.animevault_records (
@@ -23,18 +23,18 @@ drop policy if exists "AnimeVault users can update own records" on public.animev
 create policy "AnimeVault users can read own records"
   on public.animevault_records for select
   to authenticated
-  using (auth.uid() = owner_id);
+  using ((select auth.uid()) = owner_id);
 
 create policy "AnimeVault users can insert own records"
   on public.animevault_records for insert
   to authenticated
-  with check (auth.uid() = owner_id);
+  with check ((select auth.uid()) = owner_id);
 
 create policy "AnimeVault users can update own records"
   on public.animevault_records for update
   to authenticated
   using (auth.uid() = owner_id)
-  with check (auth.uid() = owner_id);
+  with check ((select auth.uid()) = owner_id);
 
 grant select, insert, update on public.animevault_records to authenticated;
 revoke all on public.animevault_records from anon;
