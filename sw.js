@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v151-strict-title-match';
+const CACHE_NAME = 'animevault-shell-v152-player-search-relevance';
 const APP_SHELL = [
   './',
   './index.html',
