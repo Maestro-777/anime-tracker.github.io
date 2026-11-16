@@ -1170,7 +1170,12 @@ async function uploadLibraryPosters(items) {
   }
   const pending=(await db.sync_meta.toArray()).filter(row=>row.key.startsWith('poster:'));
   const byUuid=new Map(items.filter(x=>x.recordUuid).map(x=>[x.recordUuid,x]));
-  const queue=pending.map(row=>byUuid.get(row.value?.recordUuid)).filter(item=>item&&(item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId);
+  const queue=[];
+  for(const row of pending) {
+    const item=byUuid.get(row.value?.recordUuid);
+    if(!item||item.posterDriveFileId||!(item.posterUrl||item.apiPosterUrl)) await db.sync_meta.delete(row.key);
+    else queue.push(item);
+  }
   let uploaded=0,failed=0,done=0;
   if(!queue.length) return {uploaded,failed,total:0};
   addPosterLog({level:'success',title:'Начало проверки',stage:'Очередь Google Drive',reason:`В очереди ${queue.length} новых или ожидающих постеров.`});
@@ -1275,13 +1280,13 @@ async function syncCloudNow() {
         }
         continue;
       }
-      if(Date.parse(row.updated_at||0)>Date.parse(item.syncUpdatedAt||0)) {
+      if(Date.parse(row.updated_at||0)>(row.deleted?Date.parse(item.syncUpdatedAt||0)-1:Date.parse(item.syncUpdatedAt||0))) {
         applyingCloudData=true;
         try {
-          if(row.deleted){await db.anime.delete(item.id);localByUuid.delete(row.record_id);}
+          if(row.deleted){await db.anime.delete(item.id);localByUuid.delete(row.record_id);await db.sync_meta.delete(`dirty:${row.record_id}`);await db.sync_meta.delete(`poster:${row.record_id}`);}
           else if(row.payload&&typeof row.payload==='object') {
             const copy={...row.payload};delete copy.id;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;
-            await db.anime.update(item.id,copy);localByUuid.set(row.record_id,{...item,...copy});if((copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId) await db.sync_meta.put({key:`poster:${row.record_id}`,value:{recordUuid:row.record_id}});
+            await db.anime.update(item.id,copy);localByUuid.set(row.record_id,{...item,...copy});if((copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId) await db.sync_meta.put({key:`poster:${row.record_id}`,value:{recordUuid:row.record_id}});await db.sync_meta.delete(`dirty:${row.record_id}`);
           }
           pulled++;
         } finally { applyingCloudData=false; }
