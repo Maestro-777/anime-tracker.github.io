@@ -433,7 +433,8 @@ async function enrichOne(item, metadataMap=null) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,3);
   if (!candidates.length && !item.anilistId) return 'no_title';
   try {
-    let russianOnly=!item.anilistId&&(item.metadataLookupStatus==='found'||item.metadataLookupStatus==='not_found');
+    const noMatchDue=item.metadataLookupStatus==='not_found'&&Date.parse(item.metadataRetryAt||0)<=Date.now();
+    let russianOnly=!item.anilistId&&(item.metadataLookupStatus==='found'||(item.metadataLookupStatus==='not_found'&&!noMatchDue));
     let meta=(item.anilistId||russianOnly)?{}:null;
     if(!item.anilistId&&!russianOnly) {
       let lookup=null;
@@ -448,7 +449,7 @@ async function enrichOne(item, metadataMap=null) {
     }
     const checkedAt=new Date().toISOString();
     const lookupFound=!!(meta.metadataProvider||meta.anilistId||item.metadataLookupStatus==='found'||item.anilistId);
-    const patch={...meta,metadataUpdatedAt:lookupFound?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:null,metadataLookupStatus:lookupFound?'found':'not_found'};
+    const patch={...meta,metadataUpdatedAt:lookupFound?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:lookupFound?null:new Date(Date.now()+30*24*60*60*1000).toISOString(),metadataLookupStatus:lookupFound?'found':'not_found'};
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
     if(!item.descriptionRu && meta.metadataProvider==='Shikimori' && /[А-Яа-яЁё]/.test(String(meta.description||''))) {
@@ -523,8 +524,11 @@ async function enrichLibrary() {
   const now=Date.now();
   const queue = all.filter(x => {
     const hasTitle=[x.titleOrig,x.titleRu,x.titleAlt].some(v=>String(v||'').trim());
-    const metadataDue=!x.anilistId && x.metadataLookupStatus!=='found' && x.metadataLookupStatus!=='not_found' && hasTitle &&
-      (!x.metadataLookupAttemptedAt || (x.metadataLookupStatus==='error' && Date.parse(x.metadataRetryAt||0)<=now));
+    const metadataDue=!x.anilistId && hasTitle && (
+      (!x.metadataLookupAttemptedAt && x.metadataLookupStatus!=='found' && x.metadataLookupStatus!=='not_found') ||
+      (x.metadataLookupStatus==='error' && Date.parse(x.metadataRetryAt||0)<=now) ||
+      (x.metadataLookupStatus==='not_found' && Date.parse(x.metadataRetryAt||0)<=now)
+    );
     const hasRussianSource=!!(x.anilistId || x.description || x.metadataUpdatedAt || x.metadataLookupStatus==='not_found');
     const descriptionDue=!x.descriptionRu && x.descriptionRuStatus!=='not_found' && hasRussianSource &&
       (x.descriptionRuStatus!=='error' || Date.parse(x.descriptionRuRetryAt||0)<=now);
@@ -550,7 +554,7 @@ async function enrichLibrary() {
       if(enrichmentCancel) break;
       if(!navigator.onLine){addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.','error');break;}
       const batch=queue.slice(i,i+3);
-      const needAni=batch.filter(x=>!x.anilistId&&x.metadataLookupStatus!=='found'&&x.metadataLookupStatus!=='not_found');
+      const needAni=batch.filter(x=>!x.anilistId&&x.metadataLookupStatus!=='found'&&(x.metadataLookupStatus!=='not_found'||Date.parse(x.metadataRetryAt||0)<=Date.now()));
       const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean).slice(0,3)))];
       let metadataMap=new Map(),metadataBatchError=null;
       if(titles.length) {
@@ -1346,7 +1350,8 @@ async function retryCloudRequest(operation,label='Supabase') {
 }
 async function readRemoteChanges(cursor) {
   const rows=[];
-  const since=cursor?new Date(Math.max(0,Date.parse(cursor)-2000)).toISOString():null;
+  const cursorMs=cursor?Date.parse(cursor):NaN;
+  const since=Number.isFinite(cursorMs)?new Date(Math.max(0,cursorMs-2000)).toISOString():null;
   for(let offset=0;;offset+=1000) {
     const data=await retryCloudRequest(async()=>{
       let query=supabaseClient.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).order('record_id',{ascending:true}).range(offset,offset+999);
@@ -1612,6 +1617,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.3.6 · Google Drive Posters';
+  $('app-version').textContent='v1.4.0 · Multi-API · Google Drive';
 }
 document.addEventListener('DOMContentLoaded',init);
