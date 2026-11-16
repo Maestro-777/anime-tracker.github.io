@@ -23,6 +23,11 @@ db.version(7).stores({
   anime: '++id, titleRu, titleOrig, favorite, status, currentEpisode, [titleRu+titleOrig], recordUuid, syncUpdatedAt',
   sync_meta: '&key'
 });
+db.version(8).stores({
+  anime: '++id, titleRu, titleOrig, favorite, status, currentEpisode, [titleRu+titleOrig], recordUuid, syncUpdatedAt',
+  sync_meta: '&key',
+  poster_cache: '&fileId, recordUuid, cachedAt'
+});
 
 let applyingCloudData = false;
 db.anime.hook('creating', (_key, obj) => {
@@ -160,6 +165,7 @@ function renderList(items, append = false) {
   const nextItems = items.slice(renderedCount, renderedCount + PAGE_SIZE);
   for (const item of nextItems) fragment.appendChild(createAnimeCard(item));
   els.list.appendChild(fragment);
+  hydrateDrivePosters(els.list);
   renderedCount += nextItems.length;
   updateRenderProgress(items.length);
   observeLoadMore();
@@ -177,7 +183,7 @@ function createAnimeCard(item) {
   const status = normalizeStatus(item.status);
   card.innerHTML = `
       <div class="poster-wrap">
-        <img class="poster" src="${escapeHTML(poster)}" alt="Постер: ${title}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='icon-512.png'">
+        <img class="poster" src="${escapeHTML(poster)}" data-drive-file-id="${escapeHTML(item.posterDriveFileId || '')}" alt="Постер: ${title}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='icon-512.png'">
         <div class="poster-shade"></div>
         <button class="favorite-btn ${item.favorite ? 'is-favorite' : ''}" data-action="favorite" aria-label="${item.favorite ? 'Убрать из избранного' : 'Добавить в избранное'}">${item.favorite ? '★' : '☆'}</button>
         <span class="status-badge ${statusStyles[status] || ''}">${escapeHTML(status)}</span>
@@ -841,11 +847,132 @@ function setupInstallPrompt() {
 /* Supabase cloud sync — IndexedDB remains the offline-first local source. */
 const SUPABASE_URL = 'https://ytmnsnvxjhpejidcndyw.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_qDspg8-HRV2VeewVPVKK8w_uZ8sJhpR';
-const POSTER_BUCKET = 'animevault-posters';
+const GOOGLE_CLIENT_ID = '879855347397-0t9ujjnru44ahuom1jbjsr48r5h7365h.apps.googleusercontent.com';
+const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const GOOGLE_DRIVE_FOLDER = 'AnimeVault Posters';
 const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
 });
 let cloudUser = null, syncBusy = false, syncTimer = null;
+let driveTokenClient=null, driveTokenPending=null, driveAccessToken=null, driveTokenExpiresAt=0, driveFolderId=null;
+
+function initializeGoogleDrive() {
+  if (driveTokenClient) return true;
+  if (!window.google?.accounts?.oauth2) return false;
+  driveTokenClient = window.google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID, scope: GOOGLE_DRIVE_SCOPE,
+    callback: response => {
+      const pending=driveTokenPending; driveTokenPending=null;
+      if(response?.error || !response?.access_token) { pending?.reject(new Error(response?.error_description || response?.error || 'Google не выдал токен доступа.')); return; }
+      driveAccessToken=response.access_token;
+      driveTokenExpiresAt=Date.now()+Math.max(60,Number(response.expires_in)||3600)*1000;
+      pending?.resolve(response);
+    },
+    error_callback: error => { const pending=driveTokenPending; driveTokenPending=null; pending?.reject(new Error(error?.message || 'Окно авторизации Google было закрыто или заблокировано.')); }
+  });
+  return true;
+}
+function requestGoogleDriveToken() {
+  if(!initializeGoogleDrive()) throw new Error('Не загрузился Google Identity Services. Проверьте интернет и обновите страницу.');
+  return new Promise((resolve,reject)=>{
+    driveTokenPending={resolve,reject};
+    try { driveTokenClient.requestAccessToken({prompt:''}); }
+    catch(error) { driveTokenPending=null; reject(error); }
+  });
+}
+function updateGoogleDriveUI(connected=!!driveAccessToken) {
+  const connect=$('cloud-drive-connect'), disconnect=$('cloud-drive-disconnect'), status=$('cloud-drive-status');
+  if(connect) connect.classList.toggle('hidden',connected);
+  if(disconnect) disconnect.classList.toggle('hidden',!connected);
+  if(status) status.textContent=connected
+    ? 'Google Drive подключён. Постеры сохраняются в папку «AnimeVault Posters».'
+    : 'Google Drive не подключён. Синхронизация записей Supabase доступна отдельно.';
+}
+function clearGoogleDriveSession(revoke=false) {
+  if(revoke && driveAccessToken && window.google?.accounts?.oauth2?.revoke) { try { window.google.accounts.oauth2.revoke(driveAccessToken,()=>{}); } catch {} }
+  driveAccessToken=null; driveTokenExpiresAt=0; driveFolderId=null; updateGoogleDriveUI(false);
+}
+async function driveFetch(url,options={}) {
+  if(!driveAccessToken || Date.now()>driveTokenExpiresAt-30000) throw new Error('Сеанс Google Drive истёк. Нажмите «Подключить Google Drive» ещё раз.');
+  const headers=new Headers(options.headers||{}); headers.set('Authorization',`Bearer ${driveAccessToken}`);
+  const response=await fetch(url,{...options,headers});
+  if(response.status===401) { clearGoogleDriveSession(false); throw new Error('Google Drive завершил сеанс. Подключите его повторно.'); }
+  if(!response.ok) { const detail=await response.text().catch(()=>''); throw new Error(`Google Drive HTTP ${response.status}: ${detail.slice(0,240)||response.statusText}`); }
+  return response;
+}
+async function ensureGoogleDriveFolder() {
+  if(driveFolderId) return driveFolderId;
+  const q=`name='${GOOGLE_DRIVE_FOLDER}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const listed=await (await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&pageSize=100&fields=files(id,name)`)).json();
+  if(listed.files?.length) { driveFolderId=listed.files[0].id; return driveFolderId; }
+  const folder=await (await driveFetch('https://www.googleapis.com/drive/v3/files?fields=id,name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:GOOGLE_DRIVE_FOLDER,mimeType:'application/vnd.google-apps.folder'})})).json();
+  if(!folder.id) throw new Error('Google Drive не вернул ID папки AnimeVault.');
+  driveFolderId=folder.id; return driveFolderId;
+}
+async function connectGoogleDrive() {
+  const button=$('cloud-drive-connect'); if(button) button.disabled=true;
+  try {
+    await requestGoogleDriveToken(); await ensureGoogleDriveFolder(); updateGoogleDriveUI(true);
+    cloudStatus('Google Drive подключён. Проверяем библиотеку и переносим постеры…','success');
+    if(syncBusy) await new Promise(resolve=>{const wait=()=>syncBusy?setTimeout(wait,250):resolve();wait();});
+    await syncCloudNow(); await loadAnimeData();
+  } catch(error) { cloudStatus(error?.message||'Не удалось подключить Google Drive. Проверьте OAuth и тестовый доступ.','error'); }
+  finally { if(button) button.disabled=false; }
+}
+async function disconnectGoogleDrive() {
+  clearGoogleDriveSession(true);
+  cloudStatus('Google Drive отключён. Локальный кэш постеров сохранён.','info');
+}
+async function fetchPosterFromAniList(sourceUrl) {
+  const {data:{session}}=await supabaseClient.auth.getSession();
+  if(!session?.access_token) throw new Error('Сначала войдите в AnimeVault через GitHub.');
+  const response=await fetch(`${SUPABASE_URL}/functions/v1/fetch-poster`,{
+    method:'POST',
+    headers:{'Authorization':`Bearer ${session.access_token}`,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
+    body:JSON.stringify({sourceUrl})
+  });
+  if(!response.ok) { const detail=await response.text().catch(()=>''); throw new Error(`Сервер загрузки постера HTTP ${response.status}: ${detail.slice(0,240)}`); }
+  return response.blob();
+}
+async function findDrivePoster(name,folderId) {
+  const q=`'${folderId}' in parents and name='${name}' and trashed=false`;
+  const data=await (await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&pageSize=10&fields=files(id,name,mimeType,size)`)).json();
+  return data.files?.[0]||null;
+}
+async function uploadBlobToDrive(blob,name,mimeType,folderId) {
+  const existing=await findDrivePoster(name,folderId), fields='id,name,mimeType,size';
+  if(existing?.id) {
+    return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existing.id)}?uploadType=media&fields=${fields}`,{method:'PATCH',headers:{'Content-Type':mimeType},body:blob})).json();
+  }
+  const boundary=`animevault_${crypto.randomUUID().replace(/-/g,'')}`;
+  const metadata={name,mimeType,parents:[folderId]};
+  const body=new Blob([
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`,
+    `--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`,blob,`\r\n--${boundary}--`
+  ],{type:`multipart/related; boundary=${boundary}`});
+  return (await driveFetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=${fields}`,{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body})).json();
+}
+function setPosterBlob(img,blob) {
+  if(img.dataset.objectUrl) URL.revokeObjectURL(img.dataset.objectUrl);
+  const objectUrl=URL.createObjectURL(blob); img.src=objectUrl; img.dataset.objectUrl=objectUrl; img.dataset.driveLoaded='1';
+}
+async function hydrateDrivePosters(root=document) {
+  const images=Array.from(root.querySelectorAll('img[data-drive-file-id]')).filter(img=>img.dataset.driveFileId&&img.dataset.driveLoaded!=='1'&&img.dataset.driveLoading!=='1');
+  for(let i=0;i<images.length;i+=4) await Promise.all(images.slice(i,i+4).map(async img=>{
+    const fileId=img.dataset.driveFileId; img.dataset.driveLoading='1';
+    try {
+      const cached=await db.poster_cache.get(fileId);
+      if(cached?.blob) { setPosterBlob(img,cached.blob); return; }
+      if(!driveAccessToken) return;
+      const response=await driveFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`);
+      const blob=await response.blob();
+      if(!blob.type.startsWith('image/')) throw new Error('Google Drive вернул файл, который не является изображением.');
+      await db.poster_cache.put({fileId,recordUuid:'',blob,mimeType:blob.type,cachedAt:Date.now()});
+      setPosterBlob(img,blob);
+    } catch(error) { console.warn('AnimeVault Drive poster display failed:',fileId,error); }
+    finally { delete img.dataset.driveLoading; }
+  }));
+}
 const POSTER_LOG_KEY='animevault-poster-log-v1';
 let posterLogEntries=[];
 try { posterLogEntries=JSON.parse(localStorage.getItem(POSTER_LOG_KEY)||'[]'); if(!Array.isArray(posterLogEntries)) posterLogEntries=[]; } catch { posterLogEntries=[]; }
@@ -881,6 +1008,7 @@ function setCloudSignedIn(user) {
   $('cloud-account').classList.toggle('hidden',!user);
   if(user) { cloudUserLabel(user); cloudStatus('Аккаунт подключён. Можно синхронизировать библиотеку.','success'); }
   else { $('cloud-user').textContent=''; cloudStatus('Войдите, чтобы включить синхронизацию.'); }
+  updateGoogleDriveUI(!!driveAccessToken);
 }
 async function cloudSignIn(event) {
   event.preventDefault();
@@ -916,8 +1044,12 @@ async function cloudGitHubSignIn() {
 }
 async function cloudSignOut() {
   if(!supabaseClient) return;
-  try { await supabaseClient.auth.signOut(); setCloudSignedIn(null); cloudStatus('Вы вышли. Локальная библиотека сохранена.','success'); }
-  catch(err) { cloudStatus(err.message || 'Не удалось выйти.','error'); }
+  try {
+    clearGoogleDriveSession(true);
+    await supabaseClient.auth.signOut();
+    setCloudSignedIn(null);
+    cloudStatus('Вы вышли. Локальная библиотека и кэш постеров сохранены.','success');
+  } catch(err) { cloudStatus(err.message || 'Не удалось выйти.','error'); }
 }
 async function ensureLocalCloudIds() {
   const rows=await db.anime.toArray();
@@ -927,47 +1059,55 @@ async function ensureLocalCloudIds() {
   }
 }
 async function uploadPosterToCloud(item) {
-  const sourceUrl=safeURL(item?.posterUrl || item?.apiPosterUrl);
-  if (!(item?.posterUrl || item?.apiPosterUrl) || item.posterCloudUrl || !item.recordUuid) return {status:'skip'};
-  let stage='Источник', response=null, blob=null;
+  const sourceUrl=safeURL(item?.posterUrl||item?.apiPosterUrl);
+  if(!(item?.posterUrl||item?.apiPosterUrl)||item.posterDriveFileId||!item.recordUuid) return {status:'skip'};
+  let stage='Источник',blob=null;
   try {
-    if(!sourceUrl) throw new Error('URL постера пустой или не прошёл проверку безопасности');
-    response=await fetch(sourceUrl,{mode:'cors',credentials:'omit',cache:'force-cache'});
-    if(!response.ok) throw Object.assign(new Error(`Сервер источника ответил HTTP ${response.status} ${response.statusText||''}`.trim()),{http:response.status});
-    blob=await response.blob();
-    const type=(blob.type||'').toLowerCase();
-    if(!type.startsWith('image/')) throw new Error(`Ответ не является изображением (Content-Type: ${type||'не указан'})`);
-    if(blob.size>10*1024*1024) throw new Error(`Файл ${ (blob.size/1024/1024).toFixed(2) } МБ превышает лимит 10 МБ`);
-    const ext=type.includes('png')?'png':type.includes('webp')?'webp':type.includes('gif')?'gif':type.includes('avif')?'avif':'jpg';
-    const path=`${cloudUser.id}/${item.recordUuid}.${ext}`;
-    stage='Supabase Storage';
-    const {error}=await supabaseClient.storage.from(POSTER_BUCKET).upload(path,blob,{contentType:type,cacheControl:'31536000',upsert:true});
-    if(error) throw error;
-    const {data}=supabaseClient.storage.from(POSTER_BUCKET).getPublicUrl(path);
-    if(!data?.publicUrl) throw new Error('Supabase не вернул публичную ссылку на загруженный файл');
-    stage='Сохранение ссылки';
-    await db.anime.update(item.id,{posterStoragePath:path,posterCloudUrl:data.publicUrl});
-    addPosterLog({level:'success',title:item.titleRu||item.titleOrig||item.id,stage:'Загрузка завершена',reason:'Постер скопирован в Supabase Storage',url:sourceUrl,size:`${(blob.size/1024).toFixed(1)} КБ`});
+    if(!driveAccessToken) throw new Error('Google Drive не подключён.');
+    if(!sourceUrl||!sourceUrl.startsWith('https://')) throw new Error('Нужен безопасный HTTPS-адрес постера.');
+    stage='Скачивание через Supabase Edge Function';
+    blob=await fetchPosterFromAniList(sourceUrl);
+    const type=(blob.type||'').split(';')[0].toLowerCase();
+    const allowed=['image/jpeg','image/png','image/webp','image/gif','image/avif'];
+    if(!allowed.includes(type)) throw new Error(`Источник вернул неподдерживаемый тип изображения: ${type||'не указан'}`);
+    if(blob.size>10*1024*1024) throw new Error(`Файл ${(blob.size/1024/1024).toFixed(2)} МБ превышает лимит 10 МБ`);
+    const ext=type==='image/png'?'png':type==='image/webp'?'webp':type==='image/gif'?'gif':type==='image/avif'?'avif':'jpg';
+    const name=`${item.recordUuid}.${ext}`;
+    stage='Google Drive';
+    const folderId=await ensureGoogleDriveFolder();
+    const driveFile=await uploadBlobToDrive(blob,name,type,folderId);
+    if(!driveFile?.id) throw new Error('Google Drive не вернул ID загруженного файла.');
+    stage='Сохранение идентификатора';
+    await db.anime.update(item.id,{posterDriveFileId:driveFile.id,posterDriveFileName:driveFile.name||name,posterDriveMimeType:driveFile.mimeType||type,posterDriveUpdatedAt:new Date().toISOString()});
+    await db.poster_cache.put({fileId:driveFile.id,recordUuid:item.recordUuid,blob,mimeType:type,cachedAt:Date.now()});
+    addPosterLog({level:'success',title:item.titleRu||item.titleOrig||item.id,stage:'Загрузка завершена',reason:'Постер сохранён в личный Google Drive',url:sourceUrl,size:`${(blob.size/1024).toFixed(1)} КБ`});
     return {status:'uploaded'};
   } catch(error) {
-    const reason=posterFailureReason(error,stage);
-    addPosterLog({level:'error',title:item.titleRu||item.titleOrig||item.id,stage,reason,http:error?.http||response?.status||null,size:blob?`${(blob.size/1024).toFixed(1)} КБ`:null,url:sourceUrl||String(item.posterUrl||item.apiPosterUrl||'')});
-    console.warn('AnimeVault poster upload failed:',item.titleRu,stage,reason);
+    const reason=String(error?.message||error||'Неизвестная ошибка');
+    addPosterLog({level:'error',title:item.titleRu||item.titleOrig||item.id,stage,reason,http:error?.http||null,size:blob?`${(blob.size/1024).toFixed(1)} КБ`:null,url:sourceUrl||String(item.posterUrl||item.apiPosterUrl||'')});
+    console.warn('AnimeVault Google Drive poster upload failed:',item.titleRu,stage,reason);
     return {status:'failed',stage,message:reason};
   }
 }
 async function uploadLibraryPosters(items) {
-  const queue=items.filter(item=>(item.posterUrl || item.apiPosterUrl) && !item.posterCloudUrl && item.recordUuid);
+  if(!driveAccessToken) {
+    cloudStatus('Записи синхронизируются через Supabase. Для переноса постеров сначала подключите Google Drive.');
+    return {uploaded:0,failed:0,total:0,skipped:true};
+  }
+  const queue=items.filter(item=>(item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.recordUuid);
   let uploaded=0,failed=0,done=0;
-  if(!queue.length) { cloudStatus('Постеры: новых для загрузки нет. Облачные ссылки уже сохранены либо у записей отсутствует URL постера.'); return {uploaded,failed,total:0}; }
-  addPosterLog({level:'success',title:'Начало проверки',stage:'Очередь',reason:`В очереди ${queue.length} постеров без облачной копии.`});
+  if(!queue.length) {
+    cloudStatus('Google Drive: все доступные постеры уже перенесены либо у записей отсутствует URL.');
+    return {uploaded,failed,total:0};
+  }
+  addPosterLog({level:'success',title:'Начало проверки',stage:'Очередь Google Drive',reason:`В очереди ${queue.length} постеров без копии в Google Drive.`});
   for(let i=0;i<queue.length;i+=3) {
     const results=await Promise.all(queue.slice(i,i+3).map(uploadPosterToCloud));
     for(const result of results) { if(result.status==='uploaded') uploaded++; else if(result.status==='failed') failed++; }
     done+=results.length;
-    cloudStatus(`Постеры: ${done}/${queue.length}. Успешно: ${uploaded}. Ошибки: ${failed}. Подробности — в журнале ниже.`);
+    cloudStatus(`Google Drive: ${done}/${queue.length}. Успешно: ${uploaded}. Ошибки: ${failed}.`);
   }
-  addPosterLog({level:failed?'error':'success',title:'Итог загрузки',stage:'Завершение',reason:`Проверено: ${done}; загружено: ${uploaded}; ошибок: ${failed}; пропущено: ${items.length-queue.length}.`});
+  addPosterLog({level:failed?'error':'success',title:'Итог переноса',stage:'Завершение',reason:`Проверено: ${done}; загружено: ${uploaded}; ошибок: ${failed}; пропущено: ${items.length-queue.length}.`});
   return {uploaded,failed,total:queue.length};
 }
 
@@ -1028,7 +1168,9 @@ async function syncCloudNow() {
       }
     }
     cloudStatus('Записи синхронизированы. Проверяем постеры и загружаем их в облако…');
-    const posterResult=await uploadLibraryPosters(await db.anime.toArray());
+    const posterResult=driveAccessToken
+      ? await uploadLibraryPosters(await db.anime.toArray())
+      : {uploaded:0,failed:0,total:0,skipped:true};
     const refresh=await db.anime.toArray();
     const upserts=[];
     for(const item of refresh) {
@@ -1043,7 +1185,9 @@ async function syncCloudNow() {
       const {error}=await supabaseClient.from('animevault_records').upsert(upserts.slice(i,i+100),{onConflict:'owner_id,record_id'});
       if(error) throw error; pushed+=Math.min(100,upserts.length-i);
     }
-    cloudStatus(`Синхронизация записей завершена: получено ${pulled}, отправлено ${pushed}. Постеры: проверено ${posterResult.total}, загружено ${posterResult.uploaded}, ошибок ${posterResult.failed}. Подробные причины ошибок см. в журнале постеров.`,'success');
+    cloudStatus(`Синхронизация записей завершена: получено ${pulled}, отправлено ${pushed}.`+(posterResult.skipped
+      ? ' Подключите Google Drive, чтобы перенести постеры.'
+      : ` Постеры Google Drive: проверено ${posterResult.total}, загружено ${posterResult.uploaded}, ошибок ${posterResult.failed}.`),'success');
     $('cloud-last-sync').textContent=`Последняя синхронизация: ${new Date().toLocaleString('ru-RU')}`;
     await loadAnimeData();
   } catch(err) {
@@ -1054,6 +1198,10 @@ async function syncCloudNow() {
 }
 async function initCloudAuth() {
   if(!supabaseClient) { cloudStatus('Не удалось загрузить Supabase SDK.','error'); return; }
+  initializeGoogleDrive();
+  $('cloud-drive-connect')?.addEventListener('click',connectGoogleDrive);
+  $('cloud-drive-disconnect')?.addEventListener('click',disconnectGoogleDrive);
+  updateGoogleDriveUI(false);
   $('cloud-auth-form').addEventListener('submit',cloudSignIn);
   $('cloud-github-login').addEventListener('click',cloudGitHubSignIn);
   $('cloud-auth-mode').addEventListener('change',e=>{$('cloud-submit').textContent=e.target.value==='signup'?'Создать аккаунт':'Войти';});
@@ -1147,6 +1295,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.3.5 · Detailed Poster Log';
+  $('app-version').textContent='v1.3.6 · Google Drive Posters';
 }
 document.addEventListener('DOMContentLoaded',init);
