@@ -382,7 +382,7 @@ async function fetchRussianDescription(item) {
   if(!supabaseClient) throw new Error('Supabase SDK недоступен для получения русского описания.');
   const {data:{session}}=await supabaseClient.auth.getSession();
   if(!session?.access_token) throw new Error('Для получения русского описания войдите в AnimeVault.');
-  const response=await fetch('https://ytmnsnvxjhpejidcndyw.supabase.co/functions/v1/fetch-anime-description',{
+  const response=await fetch(SUPABASE_URL+'/functions/v1/fetch-anime-description',{
     method:'POST',
     headers:{'Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_PUBLISHABLE_KEY,'Content-Type':'application/json'},
     body:JSON.stringify({title:item.titleRu||item.titleOrig||item.titleApi||'',malId:item.malId||null,description:item.description||''})
