@@ -1295,8 +1295,10 @@ async function uploadPosterToCloud(item) {
   }
 }
 async function uploadLibraryPosters() {
-  if(!driveAccessToken) {
-    cloudStatus('Записи синхронизируются через Supabase. Для переноса постеров сначала подключите Google Drive.');
+  if(!driveAccessToken || Date.now()>driveTokenExpiresAt-30000) {
+    if(driveAccessToken) clearGoogleDriveSession(false);
+    cloudStatus('Постеры остались в очереди: подключите Google Drive. После подключения перенос можно повторить без повторной подготовки библиотеки.','info');
+    addPosterLog({level:'info',title:'Перенос не запущен',stage:'Проверка авторизации',reason:'Нет действующей сессии Google Drive. Очередь сохранена без ошибок.'});
     return {uploaded:0,failed:0,total:0,skipped:true};
   }
   const seeded=await db.sync_meta.get('posterQueueSeeded');
@@ -1510,7 +1512,7 @@ async function initCloudAuth() {
   restoreGoogleDriveSession();
   $('cloud-drive-connect')?.addEventListener('click',connectGoogleDrive);
   $('cloud-drive-disconnect')?.addEventListener('click',disconnectGoogleDrive);
-  updateGoogleDriveUI(false);
+  updateGoogleDriveUI(!!driveAccessToken);
   $('cloud-auth-form').addEventListener('submit',cloudSignIn);
   $('cloud-github-login').addEventListener('click',cloudGitHubSignIn);
   $('cloud-auth-mode').addEventListener('change',e=>{$('cloud-submit').textContent=e.target.value==='signup'?'Создать аккаунт':'Войти';});
@@ -1624,6 +1626,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.4.3 · Сохранение сессии Google Drive';
+  $('app-version').textContent='v1.4.4 · Исправление переноса постеров';
 }
 document.addEventListener('DOMContentLoaded',init);
