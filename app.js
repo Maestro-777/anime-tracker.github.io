@@ -393,7 +393,7 @@ function setEnrichmentSummary(text) {
   if (detail) detail.textContent = text;
 }
 async function enrichOne(item, metadataMap=null) {
-  const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i);
+  const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,3);
   if (!candidates.length && !item.anilistId) return 'no_title';
   try {
     let meta=item.anilistId?{}:null;
@@ -466,7 +466,7 @@ async function enrichLibrary() {
       if(!navigator.onLine){addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.','error');break;}
       const batch=queue.slice(i,i+3);
       const needAni=batch.filter(x=>!x.anilistId);
-      const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean)))];
+      const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean).slice(0,3)))];
       let metadataMap=new Map(),metadataBatchError=null;
       if(titles.length) {
         try { metadataMap=await fetchAnimeMetadataBatch(titles.slice(0,9)); }
