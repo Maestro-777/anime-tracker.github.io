@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v150-aniliberty-catalog';
+const CACHE_NAME = 'animevault-shell-v151-strict-title-match';
 const APP_SHELL = [
   './',
   './index.html',
