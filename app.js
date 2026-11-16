@@ -630,7 +630,7 @@ function refreshFilterOptions(items) {
 
 
 async function loadAniListGenreCollection() {
-  const cacheKey='animevault-anilist-genres-v1';
+  const cacheKey='animevault-multi-provider-genres-v2';
   try {
     const cached=JSON.parse(localStorage.getItem(cacheKey)||'null');
     if(cached && Array.isArray(cached.genres) && Date.now()-cached.savedAt < 30*24*60*60*1000) {
@@ -644,12 +644,13 @@ async function loadAniListGenreCollection() {
     const genres=Array.isArray(payload?.genres)?payload.genres.filter(Boolean):[];
     if(genres.length) {
       window.animeVaultApiGenres=genres;
-      localStorage.setItem(cacheKey,JSON.stringify({genres,savedAt:Date.now()}));
+      try { localStorage.setItem(cacheKey,JSON.stringify({genres,savedAt:Date.now()})); } catch {}
       refreshFilterOptions(await db.anime.toArray());
     }
   } catch(err) {
-    console.warn('AniList GenreCollection unavailable; using genres saved with anime metadata.',err);
-    window.animeVaultApiGenres=[];
+    console.warn('API genre catalog unavailable; using genres saved with anime metadata.',err);
+    if(!Array.isArray(window.animeVaultApiGenres)) window.animeVaultApiGenres=[];
+    try { refreshFilterOptions(await db.anime.toArray()); } catch {}
   }
 }
 
