@@ -99,13 +99,14 @@ Deno.serve(async (request: Request) => {
     }
     const textToTranslate=shikimoriDescription||original;
     if(!textToTranslate) {
-      if(shikimoriFailed) throw new Error("Shikimori временно недоступен; повторите обработку позже.");
+      if(shikimoriFailed) throw new Error("Shikimori не ответил, а исходного описания для перевода нет.");
       return json({descriptionRu:"",source:"not_found"},200,cors);
     }
     const descriptionRu=await translateToRussian(textToTranslate);
     return json({descriptionRu,source:shikimoriDescription?"translated_shikimori":"google_translate"},200,cors);
   } catch(error) {
     const message=error instanceof Error?error.message:"Unexpected description lookup error";
+    console.error("AnimeVault description lookup failed:",message);
     return json({error:message},503,cors);
   }
 });
