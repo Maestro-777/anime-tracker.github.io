@@ -404,15 +404,12 @@ async function enrichOne(item, metadataMap=null) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,3);
   if (!candidates.length && !item.anilistId) return 'no_title';
   try {
-    const russianOnly=!item.anilistId&&(!!item.metadataUpdatedAt||item.metadataLookupStatus==='not_found');
+    let russianOnly=!item.anilistId&&(!!item.metadataUpdatedAt||item.metadataLookupStatus==='not_found');
     let meta=(item.anilistId||russianOnly)?{}:null;
     if(!item.anilistId&&!russianOnly) {
       if(metadataMap) meta=candidates.map(title=>metadataMap.get(title)).find(Boolean)||null;
       else {const found=await fetchAnimeMetadataBatch(candidates);meta=candidates.map(title=>found.get(title)).find(Boolean)||null;}
-      if(!meta) {
-        await db.anime.update(item.id,{metadataLookupAttemptedAt:new Date().toISOString(),metadataLookupStatus:'not_found'});
-        return 'miss';
-      }
+      if(!meta) { russianOnly=true;meta={}; }
     }
     const patch={...meta,metadataUpdatedAt:meta.anilistId?new Date().toISOString():(item.metadataUpdatedAt||new Date().toISOString()),metadataLookupAttemptedAt:new Date().toISOString(),metadataLookupStatus:russianOnly?'not_found':'found'};
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
@@ -432,7 +429,7 @@ async function enrichOne(item, metadataMap=null) {
       }
     }
     await db.anime.update(item.id,patch);
-    return 'ok';
+    return russianOnly&&!patch.descriptionRu?'miss':'ok';
   } catch(err) {
     console.warn('Metadata lookup failed:',item.titleRu,err);
     if(err.retryAfter) await new Promise(r=>setTimeout(r,err.retryAfter));
