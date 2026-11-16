@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v142-translation-cooldown';
+const CACHE_NAME = 'animevault-shell-v143-deferred-translation';
 const APP_SHELL = [
   './',
   './index.html',
