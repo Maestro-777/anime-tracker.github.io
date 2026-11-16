@@ -461,20 +461,24 @@ async function enrichLibrary() {
     setEnrichmentSummary('Всё уже проверено — новых запросов не требуется.');
   }
   try {
-    for (let i=0; i<queue.length; i+=5) {
+    for (let i=0; i<queue.length; i+=3) {
       if(enrichmentCancel) break;
       if(!navigator.onLine){addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.','error');break;}
-      const batch=queue.slice(i,i+5);
+      const batch=queue.slice(i,i+3);
       const needAni=batch.filter(x=>!x.anilistId);
       const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean)))];
-      let metadataMap=new Map();
+      let metadataMap=new Map(),metadataBatchError=null;
       if(titles.length) {
-        try { metadataMap=await fetchAnimeMetadataBatch(titles.slice(0,10)); }
-        catch(err) { console.warn('AniList batch failed:',err); }
+        try { metadataMap=await fetchAnimeMetadataBatch(titles.slice(0,9)); }
+        catch(err) { metadataBatchError=err; console.warn('AniList batch failed:',err); }
       }
       for(const item of batch) {
         if(enrichmentCancel) break;
-        const result=await enrichOne(item,metadataMap);
+        let result;
+        if(!item.anilistId&&metadataBatchError) {
+          await db.anime.update(item.id,{metadataLookupStatus:'error',metadataLookupError:String(metadataBatchError?.message||metadataBatchError).slice(0,180)});
+          result='error';
+        } else result=await enrichOne(item,metadataMap);
         done++;
         if(result==='ok'){found++;addEnrichmentLog(`✓ Обработано: ${item.titleRu||item.titleOrig}`,'success');}
         else if(result==='miss'){missed++;addEnrichmentLog(`— Не найдено в AniList: ${item.titleRu||item.titleOrig}`,'muted');}
@@ -488,7 +492,7 @@ async function enrichLibrary() {
         setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`);
       }
       if(done%10<5||done===queue.length) await loadAnimeData();
-      if(i+5<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,1200));
+      if(i+3<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,1200));
     }
     await loadAnimeData();
     const status = enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Завершено: найдено ${found}, не найдено ${missed}, ошибок ${errors}`;
@@ -1158,16 +1162,27 @@ async function uploadLibraryPosters(items) {
     cloudStatus('Записи синхронизируются через Supabase. Для переноса постеров сначала подключите Google Drive.');
     return {uploaded:0,failed:0,total:0,skipped:true};
   }
-  const queue=items.filter(item=>(item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.recordUuid);
-  let uploaded=0,failed=0,done=0;
-  if(!queue.length) {
-    cloudStatus('Google Drive: все доступные постеры уже перенесены либо у записей отсутствует URL.');
-    return {uploaded,failed,total:0};
+  const seeded=await db.sync_meta.get('posterQueueSeeded');
+  if(!seeded) {
+    const legacy=items.filter(item=>(item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.recordUuid);
+    if(legacy.length) await db.sync_meta.bulkPut(legacy.map(item=>({key:`poster:${item.recordUuid}`,value:{recordUuid:item.recordUuid}})));
+    await db.sync_meta.put({key:'posterQueueSeeded',value:new Date().toISOString()});
   }
-  addPosterLog({level:'success',title:'Начало проверки',stage:'Очередь Google Drive',reason:`В очереди ${queue.length} постеров без копии в Google Drive.`});
+  const pending=(await db.sync_meta.toArray()).filter(row=>row.key.startsWith('poster:'));
+  const byUuid=new Map(items.filter(x=>x.recordUuid).map(x=>[x.recordUuid,x]));
+  const queue=pending.map(row=>byUuid.get(row.value?.recordUuid)).filter(item=>item&&(item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId);
+  let uploaded=0,failed=0,done=0;
+  if(!queue.length) return {uploaded,failed,total:0};
+  addPosterLog({level:'success',title:'Начало проверки',stage:'Очередь Google Drive',reason:`В очереди ${queue.length} новых или ожидающих постеров.`});
   for(let i=0;i<queue.length;i+=3) {
-    const results=await Promise.all(queue.slice(i,i+3).map(uploadPosterToCloud));
-    for(const result of results) { if(result.status==='uploaded') uploaded++; else if(result.status==='failed') failed++; }
+    const group=queue.slice(i,i+3);
+    const results=await Promise.all(group.map(uploadPosterToCloud));
+    for(let j=0;j<results.length;j++) {
+      const result=results[j],item=group[j];
+      if(result.status==='uploaded'){uploaded++;await db.sync_meta.delete(`poster:${item.recordUuid}`);}
+      else if(result.status==='failed') failed++;
+      else await db.sync_meta.delete(`poster:${item.recordUuid}`);
+    }
     done+=results.length;
     cloudStatus(`Google Drive: ${done}/${queue.length}. Успешно: ${uploaded}. Ошибки: ${failed}.`);
   }
@@ -1255,7 +1270,7 @@ async function syncCloudNow() {
           applyingCloudData=true;
           try {
             const copy={...row.payload};delete copy.id;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;
-            const id=await db.anime.add(copy);localByUuid.set(row.record_id,{...copy,id});pulled++;
+            const id=await db.anime.add(copy);localByUuid.set(row.record_id,{...copy,id});if((copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId) await db.sync_meta.put({key:`poster:${row.record_id}`,value:{recordUuid:row.record_id}});pulled++;
           } finally { applyingCloudData=false; }
         }
         continue;
@@ -1266,7 +1281,7 @@ async function syncCloudNow() {
           if(row.deleted){await db.anime.delete(item.id);localByUuid.delete(row.record_id);}
           else if(row.payload&&typeof row.payload==='object') {
             const copy={...row.payload};delete copy.id;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;
-            await db.anime.update(item.id,copy);localByUuid.set(row.record_id,{...item,...copy});
+            await db.anime.update(item.id,copy);localByUuid.set(row.record_id,{...item,...copy});if((copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId) await db.sync_meta.put({key:`poster:${row.record_id}`,value:{recordUuid:row.record_id}});
           }
           pulled++;
         } finally { applyingCloudData=false; }
