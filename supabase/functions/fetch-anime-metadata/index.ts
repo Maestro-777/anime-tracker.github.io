@@ -60,13 +60,13 @@ async function anilistRequest(query:string,variables:Record<string,unknown>={}) 
   if(Date.now()<anilistDisabledUntil) throw Object.assign(new Error(`AniList временно отключён после ошибки: ${anilistDisabledReason}`),{status:404,provider:"AniList"});
   let lastError:any=null;
   for(const endpoint of ANILIST_ENDPOINTS) {
-    for(let attempt=0;attempt<3;attempt++) {
+    for(let attempt=0;attempt<2;attempt++) {
       let response:Response;
       try {
-        response=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json","User-Agent":USER_AGENT},body:JSON.stringify({query,variables}),signal:AbortSignal.timeout(12000)});
+        response=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json","User-Agent":USER_AGENT},body:JSON.stringify({query,variables}),signal:AbortSignal.timeout(7000)});
       } catch(error) {
         lastError=Object.assign(new Error(`AniList network error: ${error instanceof Error?error.message:String(error)}`),{provider:"AniList"});
-        if(attempt<2){await sleep(600*2**attempt);continue;}
+        if(attempt<1){await sleep(600);continue;}
         break;
       }
       const {text,data}=await readResponse(response);
@@ -83,7 +83,7 @@ async function anilistRequest(query:string,variables:Record<string,unknown>={}) 
         }
         break;
       }
-      if([408,425,429,500,502,503,504].includes(response.status)&&attempt<2) {
+      if([408,425,429,500,502,503,504].includes(response.status)&&attempt<1) {
         const reset=Number(response.headers.get("X-RateLimit-Reset")||0);
         const retryAfter=Number(response.headers.get("Retry-After")||0);
         const wait=retryAfter>0?retryAfter*1000:(reset>0?Math.max(1000,reset*1000-Date.now()+500):700*2**attempt);
@@ -97,7 +97,7 @@ async function anilistRequest(query:string,variables:Record<string,unknown>={}) 
 }
 async function searchShikimori(title:string) {
   const url=new URL(`${SHIKIMORI_API}/animes`);url.searchParams.set("search",title);url.searchParams.set("limit","10");
-  const response=await fetch(url,{headers:{"Accept":"application/json","User-Agent":USER_AGENT},signal:AbortSignal.timeout(10000)});
+  const response=await fetch(url,{headers:{"Accept":"application/json","User-Agent":USER_AGENT},signal:AbortSignal.timeout(5000)});
   const {text,data}=await readResponse(response);
   if(!response.ok)throw Object.assign(new Error(`Shikimori HTTP ${response.status}: ${text.slice(0,160)}`),{status:response.status,provider:"Shikimori"});
   if(!Array.isArray(data))throw new Error("Shikimori returned an unexpected response");
