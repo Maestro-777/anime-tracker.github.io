@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v136-google-drive-posters';
+const CACHE_NAME = 'animevault-shell-v137-russian-sync-optimization';
 const APP_SHELL = [
   './',
   './index.html',
