@@ -38,7 +38,7 @@ function normalizeShikimori(item:any) {
   const date=String(item.aired_on||item.released_on||"");
   const kind=String(item.kind||"").toLowerCase();
   const format=({tv:"TV",movie:"Movie",ova:"OVA",ona:"ONA",special:"Special",tv_special:"Special",music:"Music"} as Record<string,string>)[kind]||kind.toUpperCase();
-  return {anilistId:null,malId:Number(item.myanimelist_id)||null,shikimoriId:Number(item.id)||null,titleApi:item.english||item.name||item.russian||"",description:clean(item.description),totalEpisodes:Number(item.episodes)||null,episodeDuration:Number(item.duration)||null,format,year:Number(date.slice(0,4))||null,score:Number(item.score)>0?Math.round(Number(item.score)*10):null,genres:genreRows.map((g:any)=>String(g?.russian||g?.name||"").trim()).filter(Boolean),apiPosterUrl:absoluteImage(item.image?.original||item.image?.preview,"https://shikimori.one"),metadataProvider:"Shikimori"};
+  return {anilistId:null,malId:Number(item.myanimelist_id)||null,shikimoriId:Number(item.id)||null,titleApi:(Array.isArray(item.english)?item.english[0]:item.english)||item.name||item.russian||"",description:clean(item.description),totalEpisodes:Number(item.episodes)||null,episodeDuration:Number(item.duration)||null,format,year:Number(date.slice(0,4))||null,score:Number(item.score)>0?Math.round(Number(item.score)*10):null,genres:genreRows.map((g:any)=>String(g?.russian||g?.name||"").trim()).filter(Boolean),apiPosterUrl:absoluteImage(item.image?.original||item.image?.preview,"https://shikimori.one"),metadataProvider:"Shikimori"};
 }
 function normalizeKitsu(item:any) {
   const a=item?.attributes||{};if(!item?.id)return null;
@@ -83,7 +83,7 @@ async function searchShikimori(title:string) {
   if(!Array.isArray(data))throw new Error("Shikimori returned an unexpected response");
   const target=normalize(title);let best:any=null,bestScore=0;
   for(const item of data) {
-    const names=[item?.russian,item?.name,item?.english,item?.japanese,...(Array.isArray(item?.synonyms)?item.synonyms:[])].map(normalize).filter(Boolean);
+    const names=[item?.russian,item?.name,...(Array.isArray(item?.english)?item.english:[item?.english]),item?.japanese,...(Array.isArray(item?.synonyms)?item.synonyms:[])].map(normalize).filter(Boolean);
     const score=Math.max(0,...names.map(name=>similarity(target,name)));
     if(score>bestScore){best=item;bestScore=score;}
   }
