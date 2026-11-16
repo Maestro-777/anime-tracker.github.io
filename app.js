@@ -1275,6 +1275,20 @@ async function syncCloudNow() {
     const remote=new Map(remoteRows.map(row=>[row.record_id,row]));
     const metaRows=await db.sync_meta.toArray();
     const pendingDeletes=metaRows.filter(x=>x.key.startsWith('tombstone:'));
+    if(pendingDeletes.length) {
+      const ids=pendingDeletes.map(x=>x.value.recordUuid);
+      const latestRows=await retryCloudRequest(async()=>{
+        const {data,error}=await supabaseClient.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).in('record_id',ids);
+        return {data,error};
+      });
+      for(const row of latestRows||[]) {
+        const previous=remote.get(row.record_id);
+        if(!previous||Date.parse(row.updated_at||0)>Date.parse(previous.updated_at||0)) {
+          remote.set(row.record_id,row);
+          remoteRows.push(row);
+        }
+      }
+    }
     const staleDeletes=pendingDeletes.filter(x=>Date.parse(remote.get(x.value.recordUuid)?.updated_at||0)>Date.parse(x.value.deletedAt||0));
     if(staleDeletes.length) await db.sync_meta.bulkDelete(staleDeletes.map(x=>x.key));
     const effectiveDeletes=pendingDeletes.filter(x=>!staleDeletes.includes(x));
