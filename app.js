@@ -996,6 +996,7 @@ const supabaseClient = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBL
 });
 let cloudUser = null, syncBusy = false, syncTimer = null, syncInterval = null, syncRequested = false, lastAutoSyncAt = 0;
 let driveTokenClient=null, driveTokenPending=null, driveAccessToken=null, driveTokenExpiresAt=0, driveFolderId=null;
+const DRIVE_SESSION_KEY='animevault-google-drive-session-v1';
 
 function initializeGoogleDrive() {
   if (driveTokenClient) return true;
@@ -1007,6 +1008,7 @@ function initializeGoogleDrive() {
       if(response?.error || !response?.access_token) { pending?.reject(new Error(response?.error_description || response?.error || 'Google не выдал токен доступа.')); return; }
       driveAccessToken=response.access_token;
       driveTokenExpiresAt=Date.now()+Math.max(60,Number(response.expires_in)||3600)*1000;
+      try { sessionStorage.setItem(DRIVE_SESSION_KEY,JSON.stringify({accessToken:driveAccessToken,expiresAt:driveTokenExpiresAt})); } catch {}
       pending?.resolve(response);
     },
     error_callback: error => { const pending=driveTokenPending; driveTokenPending=null; pending?.reject(new Error(error?.message || 'Окно авторизации Google было закрыто или заблокировано.')); }
@@ -1029,8 +1031,24 @@ function updateGoogleDriveUI(connected=!!driveAccessToken) {
     ? 'Google Drive подключён. Постеры сохраняются в папку «AnimeVault Posters».'
     : 'Google Drive не подключён. Синхронизация записей Supabase доступна отдельно.';
 }
+function restoreGoogleDriveSession() {
+  try {
+    const saved=JSON.parse(sessionStorage.getItem(DRIVE_SESSION_KEY)||'null');
+    if(saved?.accessToken && Number(saved.expiresAt)>Date.now()+30000) {
+      driveAccessToken=saved.accessToken;
+      driveTokenExpiresAt=Number(saved.expiresAt);
+      updateGoogleDriveUI(true);
+      return true;
+    }
+  } catch {}
+  try { sessionStorage.removeItem(DRIVE_SESSION_KEY); } catch {}
+  driveAccessToken=null; driveTokenExpiresAt=0;
+  updateGoogleDriveUI(false);
+  return false;
+}
 function clearGoogleDriveSession(revoke=false) {
   if(revoke && driveAccessToken && window.google?.accounts?.oauth2?.revoke) { try { window.google.accounts.oauth2.revoke(driveAccessToken,()=>{}); } catch {} }
+  try { sessionStorage.removeItem(DRIVE_SESSION_KEY); } catch {}
   driveAccessToken=null; driveTokenExpiresAt=0; driveFolderId=null; updateGoogleDriveUI(false);
 }
 async function driveFetch(url,options={}) {
@@ -1489,6 +1507,7 @@ async function syncCloudNow() {
 async function initCloudAuth() {
   if(!supabaseClient) { cloudStatus('Не удалось загрузить Supabase SDK.','error'); return; }
   initializeGoogleDrive();
+  restoreGoogleDriveSession();
   $('cloud-drive-connect')?.addEventListener('click',connectGoogleDrive);
   $('cloud-drive-disconnect')?.addEventListener('click',disconnectGoogleDrive);
   updateGoogleDriveUI(false);
@@ -1605,6 +1624,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.4.2 · Исправление CDN постеров';
+  $('app-version').textContent='v1.4.3 · Сохранение сессии Google Drive';
 }
 document.addEventListener('DOMContentLoaded',init);
