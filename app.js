@@ -498,7 +498,7 @@ async function enrichLibrary() {
         $('enrich-progress-bar').style.width=`${queue.length?done/queue.length*100:100}%`;
         setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`);
       }
-      if(done%10<5||done===queue.length) await loadAnimeData();
+      if(done%10===0||done===queue.length) await loadAnimeData();
       if(i+3<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,2200));
     }
     await loadAnimeData();
