@@ -187,10 +187,12 @@ Deno.serve(async(request:Request)=>{
     const paceFallback=async()=>{if(fallbackRequests++>0)await sleep(230);};
     for(const title of titles) {
       if(results.has(title))continue;
-      let anyProviderHealthy=providerState.AniList?.ok===true;const errors:string[]=[];
+      let shikimoriHealthy=false,kitsuHealthy=false;
+      const errors:string[]=[];
+      if(providerState.AniList?.error)errors.push(String(providerState.AniList.error));
       try {
         await paceFallback();
-        const metadata=await searchShikimori(title);anyProviderHealthy=true;
+        const metadata=await searchShikimori(title);shikimoriHealthy=true;
         providerState.Shikimori={ok:true,status:200};
         if(metadata){results.set(title,{searchTitle:title,metadata,status:"found"});continue;}
       } catch(error) {
@@ -199,16 +201,16 @@ Deno.serve(async(request:Request)=>{
       }
       try {
         await paceFallback();
-        const metadata=await searchKitsu(title);anyProviderHealthy=true;
+        const metadata=await searchKitsu(title);kitsuHealthy=true;
         providerState.Kitsu={ok:true,status:200};
         if(metadata){results.set(title,{searchTitle:title,metadata,status:"found"});continue;}
       } catch(error) {
         const message=error instanceof Error?error.message:String(error);errors.push(message);
         providerState.Kitsu={ok:false,status:Number((error as any)?.status)||0,error:message};
       }
-      results.set(title,anyProviderHealthy
+      results.set(title,shikimoriHealthy&&kitsuHealthy
         ? {searchTitle:title,metadata:null,status:"not_found"}
-        : {searchTitle:title,metadata:null,status:"error",error:errors.join(" | ")||"Все источники API недоступны"});
+        : {searchTitle:title,metadata:null,status:"error",error:errors.join(" | ")||"Не удалось проверить все источники API"});
     }
     return json({results:[...results.values()],providers:providerState},200,cors);
   } catch(error) {
