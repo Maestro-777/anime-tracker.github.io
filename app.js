@@ -205,7 +205,7 @@ function createAnimeCard(item) {
         <img class="poster" src="${escapeHTML(poster)}" data-drive-file-id="${escapeHTML(item.posterDriveFileId || '')}" alt="Постер: ${title}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='icon-512.png'">
         <div class="poster-shade"></div>
         <button class="favorite-btn ${item.favorite ? 'is-favorite' : ''}" data-action="favorite" aria-label="${item.favorite ? 'Убрать из избранного' : 'Добавить в избранное'}">${item.favorite ? '★' : '☆'}</button>
-        <span class="status-badge ${statusStyles[status] || ''}">${escapeHTML(status)}</span>
+        <select class="card-status-select ${statusStyles[status] || ''}" data-action="status" aria-label="Изменить статус" title="Нажмите, чтобы изменить статус">${STATUSES.map(s=>`<option value="${escapeHTML(s)}" ${s===status?'selected':''}>${escapeHTML(s)}</option>`).join('')}</select>
       </div>
       <div class="card-content">
         <h2 class="anime-title" title="${title}">${title}</h2>
@@ -214,8 +214,8 @@ function createAnimeCard(item) {
         ${viewMode === 'list' ? `<div class="list-details">${[item.year, item.format, item.totalEpisodes ? `${item.totalEpisodes} серий` : '', item.episodeDuration ? `${item.episodeDuration} мин/серия` : ''].filter(Boolean).map(x => `<span>${escapeHTML(String(x))}</span>`).join('')}</div>` : ''}
         ${viewMode === 'list' && Array.isArray(item.genres) && item.genres.length ? `<div class="list-genres">${item.genres.slice(0,5).map(g => `<span>${escapeHTML(g)}</span>`).join('')}${item.genres.length > 5 ? `<span class="genre-more">+${item.genres.length-5}</span>` : ''}</div>` : ''}
         <div class="card-meta">
-          <div class="episode-stepper"><button data-action="episode-down" aria-label="Уменьшить число серий">−</button><span>${Math.max(0, Number(item.currentEpisode)||0) || (status==='Просмотрено' ? Number(item.totalEpisodes)||0 : 0)} сер.</span><button data-action="episode-up" aria-label="Увеличить число серий">+</button></div>
-          ${watch ? `<a class="watch-link" href="${escapeHTML(watch)}" target="_blank" rel="noopener noreferrer">Смотреть ↗</a>` : ''}
+          <div class="episode-stepper"><button data-action="episode-down" aria-label="Уменьшить число серий">−</button><span>${Math.max(0, Number(item.currentEpisode)||0) || (status==='Просмотрено' ? Number(item.totalEpisodes)||0 : 0)} / ${Number(item.totalEpisodes)||'—'}</span><button data-action="episode-up" aria-label="Увеличить число серий">+</button></div>
+          ${watch ? `<a class="watch-link" href="${escapeHTML(watch)}" target="_blank" rel="noopener noreferrer">Смотреть ↗</a>` : `<button class="watch-link watch-link-empty" data-action="edit" type="button">Добавить ссылку ＋</button>`}
         </div>
       </div>
       <div class="card-actions">
@@ -279,6 +279,14 @@ async function toggleFavorite(id) {
   await db.anime.update(Number(id), {favorite: item.favorite ? 0 : 1});
   loadAnimeData();
 }
+async function changeAnimeStatus(id,status) {
+  if(!STATUSES.includes(status)) return;
+  const item=await db.anime.get(Number(id)); if(!item) return;
+  const patch={status};
+  if(status==='Просмотрено'&&Number(item.totalEpisodes)>0) patch.currentEpisode=Number(item.totalEpisodes);
+  await db.anime.update(Number(id),patch);
+  showToast(`Статус изменён: ${status}`,'success'); loadAnimeData();
+}
 async function deleteAnime(id) {
   const item = await db.anime.get(Number(id));
   if (!item) return;
@@ -322,12 +330,26 @@ async function fetchAnimeMetadataBatch(titles) {
   const variables={}, declarations=[], fields=[];
   unique.forEach((title,i)=>{variables[`s${i}`]=title;declarations.push(`$s${i}: String`);fields.push(`m${i}: Media(search:$s${i},type:ANIME){${ANILIST_FIELDS}}`);});
   const query=`query (${declarations.join(',')}){${fields.join(' ')}}`;
-  const controller=new AbortController(),timeoutId=setTimeout(()=>controller.abort(),25000);
-  let response;
-  try {
-    response=await fetch(ANILIST_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({query,variables}),signal:controller.signal});
-  } finally { clearTimeout(timeoutId); }
-  if(!response.ok){const reset=Number(response.headers.get('X-RateLimit-Reset')||0);const wait=reset>0?Math.max(1000,reset*1000-Date.now()+1500):Math.min(60000,1000*2**Math.max(0,response.status-500));const error=new Error(`AniList HTTP ${response.status}`);error.retryAfter=wait;error.status=response.status;throw error;}
+  let response,lastError;
+  for(let attempt=0;attempt<3;attempt++) {
+    const controller=new AbortController(),timeoutId=setTimeout(()=>controller.abort(),25000);
+    try {
+      response=await fetch(ANILIST_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({query,variables}),signal:controller.signal});
+    } catch(err) {
+      lastError=err;
+      if(attempt===2) throw err;
+      await new Promise(resolve=>setTimeout(resolve,900*2**attempt+Math.random()*400));
+      continue;
+    } finally { clearTimeout(timeoutId); }
+    if(response.ok) break;
+    const reset=Number(response.headers.get('X-RateLimit-Reset')||0);
+    const retryable=[404,408,425,429,500,502,503,504].includes(response.status);
+    const wait=reset>0?Math.min(30000,Math.max(1000,reset*1000-Date.now()+1200)):Math.min(30000,1200*2**attempt);
+    const error=new Error(`AniList HTTP ${response.status}`);error.retryAfter=wait;error.status=response.status;lastError=error;
+    if(!retryable||attempt===2) throw error;
+    await new Promise(resolve=>setTimeout(resolve,wait+Math.random()*350));
+  }
+  if(!response?.ok) throw lastError||new Error('AniList request failed');
   const json=await response.json();
   if(json?.errors?.length) throw new Error(String(json.errors[0]?.message||'AniList GraphQL error'));
   const clean=value=>String(value||'').replace(/<br\s*\/?\s*>/gi,' ').replace(/<[^>]*>/g,'').replace(/&amp;/g,'&').replace(/&#039;/g,"'").replace(/&quot;/g,'"').trim();
@@ -400,6 +422,17 @@ function setEnrichmentSummary(text) {
   const detail = $('enrich-progress-detail');
   if (detail) detail.textContent = text;
 }
+function metadataRetryDelay(attempt,error) {
+  const status=Number(error?.status||0);
+  if(status===429) return Math.min(60*60*1000,Math.max(30*1000,Number(error?.retryAfter)||60*1000));
+  if(status===404) return 6*60*60*1000;
+  return Math.min(24*60*60*1000,5*60*1000*Math.pow(2,Math.max(0,attempt-1)));
+}
+function isRetryableMetadataError(error) {
+  const status=Number(error?.status||0);
+  const message=String(error?.message||error||'').toLowerCase();
+  return [0,404,408,425,429,500,502,503,504].includes(status) || /failed to fetch|network|timeout|abort|connection|temporar/i.test(message);
+}
 async function enrichOne(item, metadataMap=null) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,3);
   if (!candidates.length && !item.anilistId) return 'no_title';
@@ -411,7 +444,8 @@ async function enrichOne(item, metadataMap=null) {
       else {const found=await fetchAnimeMetadataBatch(candidates);meta=candidates.map(title=>found.get(title)).find(Boolean)||null;}
       if(!meta) { russianOnly=true;meta={}; }
     }
-    const patch={...meta,metadataUpdatedAt:meta.anilistId?new Date().toISOString():(item.metadataUpdatedAt||new Date().toISOString()),metadataLookupAttemptedAt:new Date().toISOString(),metadataLookupStatus:russianOnly?'not_found':'found'};
+    const checkedAt=new Date().toISOString();
+    const patch={...meta,metadataUpdatedAt:meta.anilistId?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:null,metadataLookupStatus:russianOnly?'not_found':'found'};
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
     if(!item.descriptionRu || item.descriptionRuStatus==='error') {
@@ -422,9 +456,13 @@ async function enrichOne(item, metadataMap=null) {
           patch.descriptionRuSource=ru.source||'shikimori';
           patch.descriptionRuStatus='found';
           patch.descriptionRuUpdatedAt=new Date().toISOString();
-        } else patch.descriptionRuStatus='not_found';
+          patch.descriptionRuRetryAt=null;
+        } else { patch.descriptionRuStatus='not_found'; patch.descriptionRuRetryAt=null; }
       } catch(err) {
+        const attempts=(Number(item.descriptionRuAttempts)||0)+1;
         patch.descriptionRuStatus='error';
+        patch.descriptionRuAttempts=attempts;
+        patch.descriptionRuRetryAt=new Date(Date.now()+Math.min(24*60*60*1000,30*60*1000*Math.pow(2,Math.max(0,attempts-1)))).toISOString();
         patch.descriptionRuError=String(err?.message||err).slice(0,180);
       }
     }
@@ -432,8 +470,13 @@ async function enrichOne(item, metadataMap=null) {
     return patch.descriptionRuStatus==='error'?'error':(russianOnly&&!patch.descriptionRu?'miss':'ok');
   } catch(err) {
     console.warn('Metadata lookup failed:',item.titleRu,err);
-    if(err.retryAfter) await new Promise(r=>setTimeout(r,err.retryAfter));
-    await db.anime.update(item.id,{metadataLookupStatus:'error',metadataLookupError:String(err?.message||err).slice(0,180)}).catch(()=>{});
+    const attempts=(Number(item.metadataLookupAttempts)||0)+1;
+    const now=new Date().toISOString();
+    await db.anime.update(item.id,{
+      metadataLookupStatus:'error',metadataLookupAttemptedAt:now,metadataLookupAttempts:attempts,
+      metadataRetryAt:new Date(Date.now()+metadataRetryDelay(attempts,err)).toISOString(),
+      metadataLookupError:String(err?.message||err).slice(0,180)
+    }).catch(()=>{});
     return 'error';
   }
 }
@@ -447,10 +490,16 @@ async function enrichLibrary() {
   enrichmentRunning = true; enrichmentCancel = false;
   const all = await db.anime.toArray();
   // Found entries and completed lookups (including "not found") are never searched again.
-  const queue = all.filter(x =>
-    (!x.anilistId && !x.metadataLookupAttemptedAt && !x.metadataUpdatedAt && [x.titleOrig,x.titleRu,x.titleAlt].some(v=>String(v||'').trim())) ||
-    (!x.descriptionRu && x.descriptionRuStatus!=='not_found' && (x.anilistId || x.description || x.metadataUpdatedAt || x.metadataLookupStatus==='not_found'))
-  );
+  const now=Date.now();
+  const queue = all.filter(x => {
+    const hasTitle=[x.titleOrig,x.titleRu,x.titleAlt].some(v=>String(v||'').trim());
+    const metadataDue=!x.anilistId && x.metadataLookupStatus!=='not_found' && hasTitle &&
+      (!x.metadataLookupAttemptedAt || (x.metadataLookupStatus==='error' && Date.parse(x.metadataRetryAt||0)<=now));
+    const hasRussianSource=!!(x.anilistId || x.description || x.metadataUpdatedAt || x.metadataLookupStatus==='not_found');
+    const descriptionDue=!x.descriptionRu && x.descriptionRuStatus!=='not_found' && hasRussianSource &&
+      (x.descriptionRuStatus!=='error' || Date.parse(x.descriptionRuRetryAt||0)<=now);
+    return metadataDue || descriptionDue;
+  });
   let done=0, found=0, missed=0, errors=0;
   const button = $('btn-enrich-start');
   const stopButton = $('btn-stop-enrich');
@@ -483,7 +532,8 @@ async function enrichLibrary() {
         if(enrichmentCancel) break;
         let result;
         if(!item.anilistId&&metadataBatchError) {
-          await db.anime.update(item.id,{metadataLookupStatus:'error',metadataLookupError:String(metadataBatchError?.message||metadataBatchError).slice(0,180)});
+          const attempts=(Number(item.metadataLookupAttempts)||0)+1,nowIso=new Date().toISOString();
+          await db.anime.update(item.id,{metadataLookupStatus:'error',metadataLookupAttemptedAt:nowIso,metadataLookupAttempts:attempts,metadataRetryAt:new Date(Date.now()+metadataRetryDelay(attempts,metadataBatchError)).toISOString(),metadataLookupError:String(metadataBatchError?.message||metadataBatchError).slice(0,180)});
           result='error';
         } else result=await enrichOne(item,metadataMap);
         done++;
@@ -499,7 +549,7 @@ async function enrichLibrary() {
         setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`);
       }
       if(done%10===0||done===queue.length) await loadAnimeData();
-      if(i+3<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,2200));
+      if(i+3<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,2500));
     }
     await loadAnimeData();
     const status = enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Завершено: найдено ${found}, не найдено ${missed}, ошибок ${errors}`;
@@ -1257,6 +1307,17 @@ function scheduleCloudSync(force=false) {
     syncCloudNow();
   },force?500:1800);
 }
+async function updateCloudQueueSummary() {
+  const node=$('cloud-queue-summary'); if(!node||!db.isOpen()) return;
+  try {
+    const [dirty,tombstones,posters]=await Promise.all([
+      db.anime.where('syncDirty').equals(1).count(),
+      db.sync_meta.where('key').startsWith('tombstone:').count(),
+      db.anime.where('posterPending').equals(1).count()
+    ]);
+    node.textContent=`Ожидают отправки: ${dirty} изменений · ${tombstones} удалений · ${posters} постеров`;
+  } catch(err){console.warn('Cloud queue summary:',err);}
+}
 async function syncCloudNow() {
   if(!supabaseClient||!cloudUser||!navigator.onLine) {
     if(!navigator.onLine) cloudStatus('Нет подключения к интернету. Локальная библиотека доступна.','error');
@@ -1360,8 +1421,9 @@ async function syncCloudNow() {
       ? ' Подключите Google Drive, чтобы перенести постеры.'
       : ` Google Drive: проверено ${posterResult.total}, загружено ${posterResult.uploaded}, ошибок ${posterResult.failed}.`),'success');
     const last=$('cloud-last-sync');if(last) last.textContent=`Последняя синхронизация: ${new Date(now).toLocaleString('ru-RU')}`;
-    await loadAnimeData();
+    await updateCloudQueueSummary(); await loadAnimeData();
   } catch(err) {
+    await updateCloudQueueSummary();
     console.error('AnimeVault cloud sync:',err);
     const msg=err?.message||'Неизвестная ошибка';
     cloudStatus(msg.includes('animevault_records')||msg.includes('relation')?'Таблица Supabase ещё не настроена. Выполните SQL из файла SUPABASE_SETUP.sql.':`Ошибка синхронизации: ${msg}`,'error');
@@ -1386,6 +1448,7 @@ async function initCloudAuth() {
   renderPosterLog();
   const {data:{session}}=await supabaseClient.auth.getSession();
   setCloudSignedIn(session?.user || null);
+  await updateCloudQueueSummary();
   supabaseClient.auth.onAuthStateChange((_event,nextSession)=>{
     setCloudSignedIn(nextSession?.user||null);
     if(nextSession?.user) scheduleCloudSync(true);
@@ -1419,6 +1482,12 @@ function bindEvents() {
   $('menu-update').addEventListener('click',()=>{document.querySelector('.manage-menu').open=false;switchStats('update');});
   $('mobile-update').addEventListener('click',()=>switchStats('update'));
   $('btn-enrich-start').addEventListener('click',enrichLibrary);
+  $('btn-retry-enrich-errors')?.addEventListener('click',async()=>{
+    const failed=await db.anime.filter(x=>x.metadataLookupStatus==='error'||x.descriptionRuStatus==='error').toArray();
+    const due=new Date(0).toISOString();
+    for(const item of failed){const patch={};if(item.metadataLookupStatus==='error')patch.metadataRetryAt=due;if(item.descriptionRuStatus==='error')patch.descriptionRuRetryAt=due;if(Object.keys(patch).length)await db.anime.update(item.id,patch);}
+    addEnrichmentLog(`Принудительный повтор: ${failed.length} записей.`,'info'); await enrichLibrary();
+  });
   $('btn-stop-enrich').addEventListener('click',()=>{enrichmentCancel=true;setEnrichmentSummary('Остановка после текущего запроса…');addEnrichmentLog('Запрошена остановка. Дождёмся завершения текущего запроса.','muted');});
   $('btn-clear-enrich-log').addEventListener('click',()=>{enrichmentLog=[];try{localStorage.removeItem(ENRICH_LOG_KEY);}catch{}renderEnrichmentLogs();addEnrichmentLog('Журнал очищен.','info');});
   window.addEventListener('online',()=>addEnrichmentLog('Соединение восстановлено. Можно продолжить обновление.','success'));
@@ -1444,11 +1513,22 @@ function bindEvents() {
     const card=btn.closest('.anime-card'), id=Number(card?.dataset.id);
     if(!id) return;
     const action=btn.dataset.action;
+    if(action==='status') return;
     if(action==='favorite') await toggleFavorite(id);
     if(action==='episode-up') await changeEpisode(id,1);
     if(action==='episode-down') await changeEpisode(id,-1);
     if(action==='edit') openModal(await db.anime.get(id));
     if(action==='delete') await deleteAnime(id);
+  });
+  els.list.addEventListener('change',async e=>{
+    const select=e.target.closest('[data-action="status"]');
+    if(select){const id=Number(select.closest('.anime-card')?.dataset.id);if(id)await changeAnimeStatus(id,select.value);}
+  });
+  els.list.addEventListener('click',e=>{
+    const card=e.target.closest('.anime-card');
+    if(!card||e.target.closest('button,a,select,input,textarea')) return;
+    const id=Number(card.dataset.id);
+    if(id) db.anime.get(id).then(item=>{if(item)openModal(item);});
   });
 }
 async function init() {
