@@ -1605,6 +1605,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.4.1 · Без автоперевода';
+  $('app-version').textContent='v1.4.2 · Исправление CDN постеров';
 }
 document.addEventListener('DOMContentLoaded',init);
