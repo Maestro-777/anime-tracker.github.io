@@ -404,8 +404,9 @@ async function enrichOne(item, metadataMap=null) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,3);
   if (!candidates.length && !item.anilistId) return 'no_title';
   try {
-    let meta=item.anilistId?{}:null;
-    if(!item.anilistId) {
+    const russianOnly=!item.anilistId&&(!!item.metadataUpdatedAt||item.metadataLookupStatus==='not_found');
+    let meta=(item.anilistId||russianOnly)?{}:null;
+    if(!item.anilistId&&!russianOnly) {
       if(metadataMap) meta=candidates.map(title=>metadataMap.get(title)).find(Boolean)||null;
       else {const found=await fetchAnimeMetadataBatch(candidates);meta=candidates.map(title=>found.get(title)).find(Boolean)||null;}
       if(!meta) {
@@ -413,7 +414,7 @@ async function enrichOne(item, metadataMap=null) {
         return 'miss';
       }
     }
-    const patch={...meta,metadataUpdatedAt:meta.anilistId?new Date().toISOString():(item.metadataUpdatedAt||new Date().toISOString()),metadataLookupAttemptedAt:new Date().toISOString(),metadataLookupStatus:'found'};
+    const patch={...meta,metadataUpdatedAt:meta.anilistId?new Date().toISOString():(item.metadataUpdatedAt||new Date().toISOString()),metadataLookupAttemptedAt:new Date().toISOString(),metadataLookupStatus:russianOnly?'not_found':'found'};
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
     if(!item.descriptionRu || item.descriptionRuStatus==='error') {
@@ -451,7 +452,7 @@ async function enrichLibrary() {
   // Found entries and completed lookups (including "not found") are never searched again.
   const queue = all.filter(x =>
     (!x.anilistId && !x.metadataLookupAttemptedAt && !x.metadataUpdatedAt && [x.titleOrig,x.titleRu,x.titleAlt].some(v=>String(v||'').trim())) ||
-    (x.anilistId && !x.descriptionRu && x.descriptionRuStatus!=='not_found')
+    (!x.descriptionRu && x.descriptionRuStatus!=='not_found' && (x.anilistId || x.description || x.metadataUpdatedAt || x.metadataLookupStatus==='not_found'))
   );
   let done=0, found=0, missed=0, errors=0;
   const button = $('btn-enrich-start');
