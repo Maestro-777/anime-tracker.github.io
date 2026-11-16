@@ -259,7 +259,7 @@
       <div class="brand"><div class="brand-mark"></div><div class="brand-name">Anime<span>Vault</span></div></div>
       <nav class="tabs" aria-label="Фильтр библиотеки">
         <button id="tab-all" class="tab active" aria-pressed="true">Все медиа</button>
-        <button id="tab-fav" class="tab" aria-pressed="false">★ Избранное</button><button id="tab-stats" class="tab" aria-pressed="false">▥ Статистика</button><button id="tab-update" class="tab" aria-pressed="false">↻ Обновление</button>
+        <button id="tab-fav" class="tab" aria-pressed="false">★ Избранное</button><button id="tab-stats" class="tab" aria-pressed="false">▥ Статистика</button><button id="tab-update" class="tab" aria-pressed="false">↻ Обновление</button><button id="tab-cloud" class="tab" aria-pressed="false">☁ Облако</button>
       </nav>
       <div class="header-actions">
 <button id="btn-add-modal" class="btn btn-primary">add</button>
@@ -269,6 +269,7 @@
           <div class="manage-popover">
             <label class="menu-action">⇧ Импорт CSV<input type="file" id="csv-file" accept=".csv,text/csv"></label>
             <button id="menu-update" class="menu-action" type="button">↻ Обновление данных</button>
+            <button id="menu-cloud" class="menu-action" type="button">☁ Синхронизация</button>
             <button id="btn-export" class="menu-action">⇩ Экспорт CSV</button>
             <button id="btn-backup" class="menu-action">▣ Резервная копия JSON</button>
             <button id="btn-install" class="menu-action hidden">＋ Установить приложение</button>
@@ -327,13 +328,30 @@
       <div class="update-progress-panel"><div class="update-progress-head"><strong>Прогресс обработки</strong><span id="enrich-progress">Ожидает запуска</span></div><div class="update-progress-track"><div id="enrich-progress-bar"></div></div><div class="update-metrics"><div><small>В очереди</small><strong id="enrich-total">—</strong></div><div><small>Обработано</small><strong id="enrich-done">0</strong></div><div><small>Найдено</small><strong id="enrich-found">0</strong></div><div><small>Не найдено</small><strong id="enrich-missed">0</strong></div><div><small>Ошибки</small><strong id="enrich-errors">0</strong></div></div><p id="enrich-progress-detail" class="update-hint">Запросы выполняются последовательно — так надёжнее на мобильной сети.</p></div>
       <div class="update-log-panel"><div class="update-log-head"><div><strong>Журнал обновления</strong><small>События сохраняются на этом устройстве и остаются после закрытия страницы.</small></div><button id="btn-clear-enrich-log" class="btn" type="button">Очистить</button></div><div id="enrich-log-list" class="enrich-log-list" role="log" aria-live="polite" aria-relevant="additions"></div></div>
     </section>
+    <section id="cloud-page" class="update-page hidden" aria-labelledby="cloud-title">
+      <div class="update-heading"><div><span class="eyebrow">SUPABASE · CLOUD</span><h1 id="cloud-title">Облачная синхронизация</h1><p>Локальная библиотека продолжает работать офлайн. После входа изменения будут переноситься между устройствами.</p></div><span class="update-shield">☁</span></div>
+      <div class="chart-panel" style="max-width:620px">
+        <form id="cloud-auth-form">
+          <h3>Аккаунт AnimeVault</h3>
+          <p style="color:#a1a1aa;font-size:12px">Используйте email и пароль. Это отдельный аккаунт приложения Supabase Auth, не вход в панель Supabase.</p>
+          <label class="field" style="display:block;margin:12px 0 5px;color:#a1a1aa;font-size:12px">Действие</label>
+          <select id="cloud-auth-mode" class="filter" style="width:100%;max-width:none"><option value="signin">Войти</option><option value="signup">Создать аккаунт</option></select>
+          <label class="field" style="display:block;margin:12px 0 5px;color:#a1a1aa;font-size:12px">Email</label><input id="cloud-email" class="search" style="width:100%;padding-left:13px" type="email" autocomplete="email" required placeholder="you@example.com">
+          <label class="field" style="display:block;margin:12px 0 5px;color:#a1a1aa;font-size:12px">Пароль (минимум 8 символов)</label><input id="cloud-password" class="search" style="width:100%;padding-left:13px" type="password" autocomplete="current-password" minlength="8" required placeholder="••••••••">
+          <button id="cloud-submit" class="btn btn-primary" type="submit" style="margin-top:15px;width:100%">Войти</button>
+        </form>
+        <div id="cloud-account" class="hidden"><h3>Аккаунт подключён</h3><p id="cloud-user" style="color:#f4f4f5"></p><p style="color:#a1a1aa;font-size:12px">Синхронизация работает при открытом приложении, возвращении в него и восстановлении сети.</p><button id="cloud-sync-now" class="btn btn-primary" type="button">Синхронизировать сейчас</button> <button id="cloud-signout" class="btn" type="button">Выйти</button><p id="cloud-last-sync" style="color:#71717a;font-size:11px"></p></div>
+        <p id="cloud-status" role="status" aria-live="polite" style="margin:15px 0 0;padding:11px;border-radius:10px;background:#09090b;color:#d4d4d8;font-size:12px"></p>
+      </div>
+      <div class="update-log-panel"><div class="update-log-head"><div><strong>Как это работает</strong><small>Данные привязаны к вашему аккаунту и защищены политиками RLS.</small></div></div><p style="color:#a1a1aa;font-size:12px;line-height:1.6">Первый вход отправит локальную библиотеку в облако. На другом устройстве войдите в тот же аккаунт — записи загрузятся туда. При конфликте используется время последнего изменения. Выход из аккаунта не удаляет локальные данные.</p></div>
+    </section>
     <p id="import-status" class="hidden" aria-live="polite"></p>
   </main>
   <nav class="mobile-dock" aria-label="Основная навигация">
     <button id="mobile-library" class="dock-item active" type="button"><span>▦</span><small>Библиотека</small></button>
     <button id="mobile-fav" class="dock-item" type="button"><span>★</span><small>Избранное</small></button>
     
-    <button id="mobile-stats" class="dock-item" type="button"><span>▥</span><small>Статистика</small></button><button id="mobile-update" class="dock-item" type="button"><span>↻</span><small>Обновление</small></button>
+    <button id="mobile-stats" class="dock-item" type="button"><span>▥</span><small>Статистика</small></button><button id="mobile-update" class="dock-item" type="button"><span>↻</span><small>Обновление</small></button><button id="mobile-cloud" class="dock-item" type="button"><span>☁</span><small>Облако</small></button>
 <button id="mobile-add" class="dock-add" type="button" aria-label="Добавить аниме">＋</button>
   </nav>
   <footer class="footer"><span>AnimeVault · Личная библиотека аниме</span><span id="app-version">PWA</span></footer>
@@ -364,6 +382,7 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="https://unpkg.com/dexie@4.0.11/dist/dexie.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./app.js"></script>
 </body>
 </html>

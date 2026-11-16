@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v132-update';
+const CACHE_NAME = 'animevault-shell-v133-cloud';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,7 +8,8 @@ const APP_SHELL = [
   './icon-512.png'
 ];
 const CDN_ASSETS = [
-  'https://unpkg.com/dexie@4.0.11/dist/dexie.min.js'
+  'https://unpkg.com/dexie@4.0.11/dist/dexie.min.js',
+  'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'
 ];
 
 self.addEventListener('install', event => {
@@ -51,7 +52,7 @@ self.addEventListener('fetch', event => {
   }
 
   // Cache-first for the pinned Dexie dependency; other image/API requests are network-first.
-  if (url.hostname === 'unpkg.com') {
+  if (url.hostname === 'unpkg.com' || url.hostname === 'cdn.jsdelivr.net') {
     event.respondWith((async () => {
       const cache = await caches.open(CACHE_NAME);
       const cached = await cache.match(req);

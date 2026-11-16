@@ -2,7 +2,7 @@
 'use strict';
 
 const DB_NAME = 'AnimeTrackerDB';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 const STATUSES = ['Смотрю', 'В планах', 'Просмотрено', 'Отложено', 'Брошено'];
 const STATUS_ALIASES = {
   'просмотренно': 'Просмотрено', 'просмотрено': 'Просмотрено',
@@ -18,6 +18,26 @@ db.version(6).stores({
     item.currentEpisode = Math.max(0, Number(item.currentEpisode) || 0);
     item.status = normalizeStatus(item.status);
   });
+});
+db.version(7).stores({
+  anime: '++id, titleRu, titleOrig, favorite, status, currentEpisode, [titleRu+titleOrig], recordUuid, syncUpdatedAt',
+  sync_meta: '&key'
+});
+
+let applyingCloudData = false;
+db.anime.hook('creating', (_key, obj) => {
+  if (applyingCloudData) return;
+  obj.recordUuid = obj.recordUuid || crypto.randomUUID();
+  obj.syncUpdatedAt = new Date().toISOString();
+});
+db.anime.hook('updating', (mods, _key, obj) => {
+  if (applyingCloudData) return mods;
+  const nextTime=Math.max(Date.now(),Date.parse(obj?.syncUpdatedAt||0)+1);
+  return {...mods, syncUpdatedAt: new Date(nextTime).toISOString()};
+});
+db.anime.hook('deleting', (key, obj, tx) => {
+  if (applyingCloudData || obj?._remoteDelete || !obj?.recordUuid) return;
+  return tx.table('sync_meta').put({key:`tombstone:${obj.recordUuid}`, value:{recordUuid:obj.recordUuid, deletedAt:new Date().toISOString()}});
 });
 
 let currentTab = 'all';
@@ -109,7 +129,7 @@ async function loadAnimeData() {
     items.sort((a,b) => (b.id || 0) - (a.id || 0));
     currentItems = items;
     renderList(items);
-    if (currentTab === 'update' || currentTab === 'stats') { els.list.classList.add('hidden'); els.empty.classList.add('hidden'); }
+    if (currentTab === 'update' || currentTab === 'stats' || currentTab === 'cloud') { els.list.classList.add('hidden'); els.empty.classList.add('hidden'); }
     refreshFilterOptions(await db.anime.toArray());
     $('library-count').textContent = `${items.length} ${plural(items.length, ['аниме','аниме','аниме'])}`;
     $('total-count').textContent = `${(await db.anime.count()).toLocaleString('ru-RU')} в библиотеке`;
@@ -490,23 +510,24 @@ function setView(mode) {
   renderList(currentItems);
 }
 function switchStats(tab) {
-  const isStats=tab==='stats', isUpdate=tab==='update';
+  const isStats=tab==='stats', isUpdate=tab==='update', isCloud=tab==='cloud';
   currentTab=(isStats || isUpdate)?tab:tab;
   els.statsPage.classList.toggle('hidden',!isStats);
   $('update-page').classList.toggle('hidden',!isUpdate);
-  els.list.classList.toggle('hidden',isStats || isUpdate);
-  els.empty.classList.toggle('hidden',isStats || isUpdate || currentItems.length>0);
-  $('load-more-wrap').classList.toggle('hidden',isStats || isUpdate);
-  $('tab-all').classList.toggle('active',tab==='all'); $('tab-fav').classList.toggle('active',tab==='favorite'); $('tab-stats').classList.toggle('active',isStats); $('tab-update').classList.toggle('active',isUpdate);
-  $('tab-all').setAttribute('aria-pressed',String(tab==='all')); $('tab-fav').setAttribute('aria-pressed',String(tab==='favorite')); $('tab-stats').setAttribute('aria-pressed',String(isStats)); $('tab-update').setAttribute('aria-pressed',String(isUpdate));
+  $('cloud-page').classList.toggle('hidden',!isCloud);
+  els.list.classList.toggle('hidden',isStats || isUpdate || isCloud);
+  els.empty.classList.toggle('hidden',isStats || isUpdate || isCloud || currentItems.length>0);
+  $('load-more-wrap').classList.toggle('hidden',isStats || isUpdate || isCloud);
+  $('tab-all').classList.toggle('active',tab==='all'); $('tab-fav').classList.toggle('active',tab==='favorite'); $('tab-stats').classList.toggle('active',isStats); $('tab-update').classList.toggle('active',isUpdate); $('tab-cloud').classList.toggle('active',isCloud);
+  $('tab-all').setAttribute('aria-pressed',String(tab==='all')); $('tab-fav').setAttribute('aria-pressed',String(tab==='favorite')); $('tab-stats').setAttribute('aria-pressed',String(isStats)); $('tab-update').setAttribute('aria-pressed',String(isUpdate)); $('tab-cloud').setAttribute('aria-pressed',String(isCloud));
   $('mobile-library')?.classList.toggle('active',tab==='all');
   $('mobile-fav')?.classList.toggle('active',tab==='favorite');
   $('mobile-stats')?.classList.toggle('active',isStats);
-  $('mobile-update')?.classList.toggle('active',isUpdate);
-  document.querySelector('.toolbar').classList.toggle('hidden',isStats || isUpdate);
+  $('mobile-update')?.classList.toggle('active',isUpdate); $('mobile-cloud')?.classList.toggle('active',isCloud);
+  document.querySelector('.toolbar').classList.toggle('hidden',isStats || isUpdate || isCloud);
   const libraryStats=document.getElementById('library-stats');
-  if(libraryStats) libraryStats.classList.toggle('hidden',isStats || isUpdate);
-  if(isStats) renderStatistics(); else if(!isUpdate) loadAnimeData();
+  if(libraryStats) libraryStats.classList.toggle('hidden',isStats || isUpdate || isCloud);
+  if(isStats) renderStatistics(); else if(!isUpdate && !isCloud) loadAnimeData();
 }
 
 function renderStatistics() {
@@ -817,6 +838,154 @@ function setupInstallPrompt() {
   });
 }
 
+/* Supabase cloud sync — IndexedDB remains the offline-first local source. */
+const SUPABASE_URL = 'https://ytmnsnvxjhpejidcndyw.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_qDspg8-HRV2VeewVPVKK8w_uZ8sJhpR';
+const supabase = window.supabase?.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+});
+let cloudUser = null, syncBusy = false, syncTimer = null;
+function cloudStatus(message, type='info') {
+  const el=$('cloud-status'); if(!el) return;
+  el.textContent=message; el.dataset.type=type;
+}
+function cloudUserLabel(user) {
+  const email=user?.email || user?.user_metadata?.email || 'Аккаунт подключён';
+  $('cloud-user').textContent=email;
+}
+function setCloudSignedIn(user) {
+  cloudUser=user || null;
+  $('cloud-auth-form').classList.toggle('hidden',!!user);
+  $('cloud-account').classList.toggle('hidden',!user);
+  if(user) { cloudUserLabel(user); cloudStatus('Аккаунт подключён. Можно синхронизировать библиотеку.','success'); }
+  else { $('cloud-user').textContent=''; cloudStatus('Войдите, чтобы включить синхронизацию.'); }
+}
+async function cloudSignIn(event) {
+  event.preventDefault();
+  if(!supabase) return cloudStatus('Не загрузилась библиотека Supabase. Проверьте интернет и обновите страницу.','error');
+  const email=$('cloud-email').value.trim(), password=$('cloud-password').value;
+  const mode=$('cloud-auth-mode').value;
+  $('cloud-submit').disabled=true;
+  try {
+    const result=mode==='signup'
+      ? await supabase.auth.signUp({email,password})
+      : await supabase.auth.signInWithPassword({email,password});
+    if(result.error) throw result.error;
+    if(mode==='signup' && !result.data.session) cloudStatus('Аккаунт создан. Подтвердите email по письму Supabase, затем войдите.','success');
+    else { setCloudSignedIn(result.data.user); await syncCloudNow(); }
+  } catch(err) { cloudStatus(err.message || 'Не удалось войти.','error'); }
+  finally { $('cloud-submit').disabled=false; }
+}
+async function cloudSignOut() {
+  if(!supabase) return;
+  try { await supabase.auth.signOut(); setCloudSignedIn(null); cloudStatus('Вы вышли. Локальная библиотека сохранена.','success'); }
+  catch(err) { cloudStatus(err.message || 'Не удалось выйти.','error'); }
+}
+async function ensureLocalCloudIds() {
+  const rows=await db.anime.toArray();
+  for(const row of rows) {
+    if(!row.recordUuid) await db.anime.update(row.id,{recordUuid:crypto.randomUUID(),syncUpdatedAt:new Date().toISOString()});
+    else if(!row.syncUpdatedAt) await db.anime.update(row.id,{syncUpdatedAt:new Date().toISOString()});
+  }
+}
+async function syncCloudNow() {
+  if(!supabase || !cloudUser || syncBusy || !navigator.onLine) {
+    if(!navigator.onLine) cloudStatus('Нет подключения к интернету. Локальная библиотека доступна.','error');
+    return;
+  }
+  syncBusy=true; $('cloud-sync-now').disabled=true; cloudStatus('Синхронизация…');
+  try {
+    await ensureLocalCloudIds();
+    let remoteRows=[];
+    for(let offset=0;;offset+=1000) {
+      const {data,error}=await supabase.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).range(offset,offset+999);
+      if(error) throw error;
+      remoteRows.push(...(data||[]));
+      if(!data || data.length<1000) break;
+    }
+    const remote=new Map((remoteRows||[]).map(row=>[row.record_id,row]));
+    const local=await db.anime.toArray();
+    const tombstones=await db.sync_meta.toArray();
+    const pendingDeletes=tombstones.filter(x=>x.key.startsWith('tombstone:'));
+    const staleDeletes=pendingDeletes.filter(x=>Date.parse(remote.get(x.value.recordUuid)?.updated_at||0)>Date.parse(x.value.deletedAt||0));
+    if(staleDeletes.length) await db.sync_meta.bulkDelete(staleDeletes.map(x=>x.key));
+    const effectiveDeletes=pendingDeletes.filter(x=>!staleDeletes.includes(x));
+    const deleteRows=effectiveDeletes.map(x=>({owner_id:cloudUser.id,record_id:x.value.recordUuid,payload:{},updated_at:x.value.deletedAt,deleted:true}));
+    if(deleteRows.length) {
+      const {error}=await supabase.from('animevault_records').upsert(deleteRows,{onConflict:'owner_id,record_id'});
+      if(error) throw error;
+      await db.sync_meta.bulkDelete(effectiveDeletes.map(x=>x.key));
+      for(const tombstone of effectiveDeletes) {
+        const prior=remote.get(tombstone.value.recordUuid);
+        const deletedRow={record_id:tombstone.value.recordUuid,payload:{},updated_at:tombstone.value.deletedAt,deleted:true};
+        remote.set(tombstone.value.recordUuid,deletedRow);
+        const idx=remoteRows.findIndex(row=>row.record_id===tombstone.value.recordUuid);
+        if(idx>=0) remoteRows[idx]=deletedRow;
+      }
+    }
+    let pulled=0, pushed=0;
+    for(const row of remoteRows||[]) {
+      const item=local.find(x=>x.recordUuid===row.record_id);
+      if(!item) {
+        if(!row.deleted && row.payload && typeof row.payload==='object') {
+          applyingCloudData=true;
+          try { const copy={...row.payload}; delete copy.id; copy.recordUuid=row.record_id; copy.syncUpdatedAt=row.updated_at; await db.anime.add(copy); pulled++; }
+          finally { applyingCloudData=false; }
+        }
+        continue;
+      }
+      const localTime=Date.parse(item.syncUpdatedAt||0), remoteTime=Date.parse(row.updated_at||0);
+      if(remoteTime>localTime) {
+        applyingCloudData=true;
+        try {
+          if(row.deleted) { item._remoteDelete=true; await db.anime.delete(item.id); }
+          else if(row.payload && typeof row.payload==='object') { const copy={...row.payload}; delete copy.id; copy.recordUuid=row.record_id; copy.syncUpdatedAt=row.updated_at; await db.anime.update(item.id,copy); }
+          pulled++;
+        } finally { applyingCloudData=false; }
+      }
+    }
+    const refresh=await db.anime.toArray();
+    const upserts=[];
+    for(const item of refresh) {
+      const cloud=remote.get(item.recordUuid);
+      const localTime=Date.parse(item.syncUpdatedAt||0), remoteTime=Date.parse(cloud?.updated_at||0);
+      if(!cloud || localTime>remoteTime) {
+        const payload={...item}; delete payload.id;
+        upserts.push({owner_id:cloudUser.id,record_id:item.recordUuid,payload,updated_at:item.syncUpdatedAt||new Date().toISOString(),deleted:false});
+      }
+    }
+    for(let i=0;i<upserts.length;i+=100) {
+      const {error}=await supabase.from('animevault_records').upsert(upserts.slice(i,i+100),{onConflict:'owner_id,record_id'});
+      if(error) throw error; pushed+=Math.min(100,upserts.length-i);
+    }
+    cloudStatus(`Синхронизировано. Получено: ${pulled}, отправлено: ${pushed}.`,'success');
+    $('cloud-last-sync').textContent=`Последняя синхронизация: ${new Date().toLocaleString('ru-RU')}`;
+    await loadAnimeData();
+  } catch(err) {
+    console.error('AnimeVault cloud sync:',err);
+    const msg=err?.message || 'Неизвестная ошибка';
+    cloudStatus(msg.includes('animevault_records') || msg.includes('relation') ? 'Таблица Supabase ещё не настроена. Выполните SQL из файла SUPABASE_SETUP.sql.' : `Ошибка синхронизации: ${msg}`,'error');
+  } finally { syncBusy=false; $('cloud-sync-now').disabled=false; }
+}
+async function initCloudAuth() {
+  if(!supabase) { cloudStatus('Не удалось загрузить Supabase SDK.','error'); return; }
+  $('cloud-auth-form').addEventListener('submit',cloudSignIn);
+  $('cloud-auth-mode').addEventListener('change',e=>{$('cloud-submit').textContent=e.target.value==='signup'?'Создать аккаунт':'Войти';});
+  $('cloud-signout').addEventListener('click',cloudSignOut);
+  $('cloud-sync-now').addEventListener('click',syncCloudNow);
+  const {data:{session}}=await supabase.auth.getSession();
+  setCloudSignedIn(session?.user || null);
+  supabase.auth.onAuthStateChange((_event,nextSession)=>{
+    setCloudSignedIn(nextSession?.user || null);
+    if(nextSession?.user) setTimeout(()=>syncCloudNow(),0);
+  });
+  if(session?.user) await syncCloudNow();
+  window.addEventListener('online',()=>{if(cloudUser) syncCloudNow();});
+  window.addEventListener('focus',()=>{if(cloudUser) syncCloudNow();});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden && cloudUser) syncCloudNow();});
+  syncTimer=setInterval(()=>{if(cloudUser && !document.hidden) syncCloudNow();},60000);
+}
+
 function bindEvents() {
   els.tabAll.addEventListener('click',()=>switchStats('all'));
   els.tabFav.addEventListener('click',()=>switchStats('favorite'));
@@ -832,6 +1001,9 @@ function bindEvents() {
   document.addEventListener('click',e=>{const menu=document.querySelector('.manage-menu');if(menu && !menu.contains(e.target))menu.open=false;});
   els.genre.addEventListener('change',e=>{filterGenre=e.target.value;loadAnimeData();}); els.format.addEventListener('change',e=>{filterFormat=e.target.value;loadAnimeData();}); els.year.addEventListener('change',e=>{filterYear=e.target.value;loadAnimeData();}); els.progress.addEventListener('change',e=>{filterProgress=e.target.value;loadAnimeData();});
   $('tab-update').addEventListener('click',()=>switchStats('update'));
+  $('tab-cloud').addEventListener('click',()=>switchStats('cloud'));
+  $('mobile-cloud').addEventListener('click',()=>switchStats('cloud'));
+  $('menu-cloud').addEventListener('click',()=>{document.querySelector('.manage-menu').open=false;switchStats('cloud');});
   $('menu-update').addEventListener('click',()=>{document.querySelector('.manage-menu').open=false;switchStats('update');});
   $('mobile-update').addEventListener('click',()=>switchStats('update'));
   $('btn-enrich-start').addEventListener('click',enrichLibrary);
@@ -876,14 +1048,16 @@ async function init() {
     await db.open();
     await importBundledLibraryIfNeeded();
     await loadAnimeData();
+    await initCloudAuth();
     loadAniListGenreCollection();
   } catch(err) {
     console.error(err); showToast('Не удалось открыть локальную базу данных', 'error');
+    cloudStatus('Локальная база не открылась: '+(err.message||err),'error');
   }
   if (viewMode==='list') setView('list');
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.3.2';
+  $('app-version').textContent='v1.3.3 · Cloud';
 }
 document.addEventListener('DOMContentLoaded',init);
