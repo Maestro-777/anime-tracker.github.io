@@ -43,22 +43,31 @@ db.version(9).stores({
 });
 
 let applyingCloudData = false;
+const cloudApplyingRecords = new Set();
+async function withCloudRecord(recordUuid, operation) {
+  if(recordUuid) cloudApplyingRecords.add(recordUuid);
+  try { return await operation(); }
+  finally { if(recordUuid) cloudApplyingRecords.delete(recordUuid); }
+}
+function isCloudRecordApplying(obj) {
+  return applyingCloudData || (!!obj?.recordUuid && cloudApplyingRecords.has(obj.recordUuid));
+}
 db.anime.hook('creating', (_key, obj) => {
-  if (applyingCloudData) return;
+  if (isCloudRecordApplying(obj)) return;
   obj.recordUuid = obj.recordUuid || crypto.randomUUID();
   obj.syncUpdatedAt = new Date().toISOString();
   obj.syncDirty = 1;
   obj.posterPending = (obj.posterUrl || obj.apiPosterUrl) && !obj.posterDriveFileId ? 1 : 0;
 });
 db.anime.hook('updating', (mods, _key, obj) => {
-  if (applyingCloudData) return mods;
+  if (isCloudRecordApplying(obj)) return mods;
   const nextTime=Math.max(Date.now(),Date.parse(obj?.syncUpdatedAt||0)+1);
   const result={...mods,syncUpdatedAt:new Date(nextTime).toISOString(),syncDirty:1};
   if(Object.prototype.hasOwnProperty.call(mods,'posterUrl')||Object.prototype.hasOwnProperty.call(mods,'apiPosterUrl')) result.posterPending=1;
   return result;
 });
 db.anime.hook('deleting', (key, obj, tx) => {
-  if (applyingCloudData || obj?._remoteDelete || !obj?.recordUuid) return;
+  if (isCloudRecordApplying(obj) || obj?._remoteDelete || !obj?.recordUuid) return;
   return tx.table('sync_meta').put({key:`tombstone:${obj.recordUuid}`, value:{recordUuid:obj.recordUuid, deletedAt:new Date().toISOString()}});
 });
 
@@ -1289,11 +1298,8 @@ async function uploadLibraryPosters() {
   const seeded=await db.sync_meta.get('posterQueueSeeded');
   if(!seeded) {
     const all=await db.anime.toArray();
-    applyingCloudData=true;
-    try {
-      for(const item of all) if((item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.posterPending!==1)
-        await db.anime.update(item.id,{posterPending:1});
-    } finally { applyingCloudData=false; }
+    for(const item of all) if((item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.posterPending!==1)
+      await withCloudRecord(item.recordUuid,()=>db.anime.update(item.id,{posterPending:1}));
     await db.sync_meta.put({key:'posterQueueSeeded',value:new Date().toISOString()});
   }
   const pending=await db.anime.where('posterPending').equals(1).toArray();
@@ -1301,9 +1307,7 @@ async function uploadLibraryPosters() {
   for(const item of pending) {
     if(item.posterUrl||item.apiPosterUrl) queue.push(item);
     else {
-      applyingCloudData=true;
-      try { await db.anime.update(item.id,{posterPending:0}); }
-      finally { applyingCloudData=false; }
+      await withCloudRecord(item.recordUuid,()=>db.anime.update(item.id,{posterPending:0}));
     }
   }
   let uploaded=0,failed=0,done=0;
@@ -1317,9 +1321,7 @@ async function uploadLibraryPosters() {
       if(result.status==='uploaded') uploaded++;
       else if(result.status==='failed') failed++;
       else {
-        applyingCloudData=true;
-        try { await db.anime.update(group[j].id,{posterPending:0}); }
-        finally { applyingCloudData=false; }
+        await withCloudRecord(group[j].recordUuid,()=>db.anime.update(group[j].id,{posterPending:0}));
       }
     }
     done+=results.length;
@@ -1429,29 +1431,30 @@ async function syncCloudNow() {
     let pulled=0;
     for(const row of remoteRows) {
       if(locallyDeletedIds.has(row.record_id)) continue;
-      const item=await db.anime.where('recordUuid').equals(row.record_id).first();
-      if(!item) {
-        if(!row.deleted&&row.payload&&typeof row.payload==='object') {
-          applyingCloudData=true;
-          try {
-            const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;copy.posterPending=(copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId?1:0;
-            await db.anime.add(copy);pulled++;
-          } finally { applyingCloudData=false; }
+      await db.transaction('rw',db.anime,async()=>{
+        const item=await db.anime.where('recordUuid').equals(row.record_id).first();
+        const remoteUpdated=Date.parse(row.updated_at||0);
+        const localUpdated=item?Date.parse(item.syncUpdatedAt||0):NaN;
+        if(!item) {
+          if(!row.deleted&&row.payload&&typeof row.payload==='object') {
+            const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;
+            copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;
+            copy.posterPending=(copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId?1:0;
+            await withCloudRecord(row.record_id,()=>db.anime.add(copy));pulled++;
+          }
+          return;
         }
-        continue;
-      }
-      const remoteUpdated=Date.parse(row.updated_at||0),localUpdated=Date.parse(item.syncUpdatedAt||0);
-      if(row.deleted?remoteUpdated>=localUpdated:remoteUpdated>localUpdated) {
-        applyingCloudData=true;
-        try {
-          if(row.deleted){await db.anime.delete(item.id);}
+        if(row.deleted?remoteUpdated>=localUpdated:remoteUpdated>localUpdated) {
+          if(row.deleted) await withCloudRecord(row.record_id,()=>db.anime.delete(item.id));
           else if(row.payload&&typeof row.payload==='object') {
-            const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;copy.posterPending=copy.posterDriveFileId?0:((copy.posterUrl!==item.posterUrl||copy.apiPosterUrl!==item.apiPosterUrl)?((copy.posterUrl||copy.apiPosterUrl)?1:0):Number(item.posterPending)||0);
-            await db.anime.update(item.id,copy);
+            const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;
+            copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;
+            copy.posterPending=copy.posterDriveFileId?0:((copy.posterUrl!==item.posterUrl||copy.apiPosterUrl!==item.apiPosterUrl)?((copy.posterUrl||copy.apiPosterUrl)?1:0):Number(item.posterPending)||0);
+            await withCloudRecord(row.record_id,()=>db.anime.update(item.id,copy));
           }
           pulled++;
-        } finally { applyingCloudData=false; }
-      }
+        }
+      });
     }
     let posterResult={uploaded:0,failed:0,total:0,skipped:true};
     if(driveAccessToken) posterResult=await uploadLibraryPosters();
@@ -1471,12 +1474,11 @@ async function syncCloudNow() {
       const chunk=upserts.slice(i,i+100);
       await retryCloudRequest(()=>supabaseClient.from('animevault_records').upsert(chunk,{onConflict:'owner_id,record_id'}));
       for(const sent of chunk) {
-        const current=await db.anime.where('recordUuid').equals(sent.record_id).first();
-        if(current&&current.syncUpdatedAt===sent.updated_at) {
-          applyingCloudData=true;
-          try { await db.anime.update(current.id,{syncDirty:0}); }
-          finally { applyingCloudData=false; }
-        }
+        await db.transaction('rw',db.anime,async()=>{
+          const current=await db.anime.where('recordUuid').equals(sent.record_id).first();
+          if(current&&current.syncUpdatedAt===sent.updated_at)
+            await withCloudRecord(sent.record_id,()=>db.anime.update(current.id,{syncDirty:0}));
+        });
       }
     }
     const remoteMax=remoteRows.reduce((max,row)=>!max||Date.parse(row.updated_at)>Date.parse(max)?row.updated_at:max,cursor||null);
