@@ -2,7 +2,7 @@
 'use strict';
 
 const DB_NAME = 'AnimeTrackerDB';
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 const STATUSES = ['Смотрю', 'В планах', 'Просмотрено', 'Отложено', 'Брошено'];
 const STATUS_ALIASES = {
   'просмотренно': 'Просмотрено', 'просмотрено': 'Просмотрено',
@@ -1122,6 +1122,8 @@ async function cloudSignOut() {
   } catch(err) { cloudStatus(err.message || 'Не удалось выйти.','error'); }
 }
 async function ensureLocalCloudIds() {
+  const marker=await db.sync_meta.get('localCloudIdsEnsuredV1');
+  if(marker) return;
   const rows=await db.anime.toArray();
   for(const row of rows) {
     if(!row.recordUuid) {
@@ -1129,6 +1131,7 @@ async function ensureLocalCloudIds() {
       await db.anime.update(row.id,{recordUuid:uuid,syncUpdatedAt:updatedAt,syncDirty:1});
     } else if(!row.syncUpdatedAt) await db.anime.update(row.id,{syncUpdatedAt:new Date().toISOString(),syncDirty:1});
   }
+  await db.sync_meta.put({key:'localCloudIdsEnsuredV1',value:new Date().toISOString()});
 }
 async function uploadPosterToCloud(item) {
   const sourceUrl=safeURL(item?.posterUrl||item?.apiPosterUrl);
@@ -1161,22 +1164,31 @@ async function uploadPosterToCloud(item) {
     return {status:'failed',stage,message:reason};
   }
 }
-async function uploadLibraryPosters(items) {
+async function uploadLibraryPosters() {
   if(!driveAccessToken) {
     cloudStatus('Записи синхронизируются через Supabase. Для переноса постеров сначала подключите Google Drive.');
     return {uploaded:0,failed:0,total:0,skipped:true};
   }
   const seeded=await db.sync_meta.get('posterQueueSeeded');
   if(!seeded) {
+    const all=await db.anime.toArray();
     applyingCloudData=true;
     try {
-      for(const item of items) if((item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.posterPending!==1)
+      for(const item of all) if((item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId&&item.posterPending!==1)
         await db.anime.update(item.id,{posterPending:1});
     } finally { applyingCloudData=false; }
     await db.sync_meta.put({key:'posterQueueSeeded',value:new Date().toISOString()});
   }
-  const freshItems=await db.anime.toArray();
-  const queue=freshItems.filter(item=>Number(item.posterPending)===1&&(item.posterUrl||item.apiPosterUrl)&&!item.posterDriveFileId);
+  const pending=await db.anime.where('posterPending').equals(1).toArray();
+  const queue=[];
+  for(const item of pending) {
+    if(!item.posterDriveFileId&&(item.posterUrl||item.apiPosterUrl)) queue.push(item);
+    else {
+      applyingCloudData=true;
+      try { await db.anime.update(item.id,{posterPending:0}); }
+      finally { applyingCloudData=false; }
+    }
+  }
   let uploaded=0,failed=0,done=0;
   if(!queue.length) return {uploaded,failed,total:0};
   addPosterLog({level:'success',title:'Начало проверки',stage:'Очередь Google Drive',reason:`В очереди ${queue.length} новых или ожидающих постеров.`});
@@ -1196,7 +1208,7 @@ async function uploadLibraryPosters(items) {
     done+=results.length;
     cloudStatus(`Google Drive: ${done}/${queue.length}. Успешно: ${uploaded}. Ошибки: ${failed}.`);
   }
-  addPosterLog({level:failed?'error':'success',title:'Итог переноса',stage:'Завершение',reason:`Проверено: ${done}; загружено: ${uploaded}; ошибок: ${failed}; пропущено: ${items.length-queue.length}.`});
+  addPosterLog({level:failed?'error':'success',title:'Итог переноса',stage:'Завершение',reason:`Проверено: ${done}; загружено: ${uploaded}; ошибок: ${failed}; пропущено: ${Math.max(0,pending.length-queue.length)}.`});
   return {uploaded,failed,total:queue.length};
 }
 
@@ -1259,8 +1271,6 @@ async function syncCloudNow() {
     const cursor=cursorRow?.value||null;
     const remoteRows=await readRemoteChanges(cursor);
     const remote=new Map(remoteRows.map(row=>[row.record_id,row]));
-    const localRows=await db.anime.toArray();
-    const localByUuid=new Map(localRows.filter(x=>x.recordUuid).map(x=>[x.recordUuid,x]));
     const metaRows=await db.sync_meta.toArray();
     const pendingDeletes=metaRows.filter(x=>x.key.startsWith('tombstone:'));
     const staleDeletes=pendingDeletes.filter(x=>Date.parse(remote.get(x.value.recordUuid)?.updated_at||0)>Date.parse(x.value.deletedAt||0));
@@ -1274,13 +1284,13 @@ async function syncCloudNow() {
     }
     let pulled=0;
     for(const row of remoteRows) {
-      const item=localByUuid.get(row.record_id);
+      const item=await db.anime.where('recordUuid').equals(row.record_id).first();
       if(!item) {
         if(!row.deleted&&row.payload&&typeof row.payload==='object') {
           applyingCloudData=true;
           try {
             const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;copy.posterPending=(copy.posterUrl||copy.apiPosterUrl)&&!copy.posterDriveFileId?1:0;
-            const id=await db.anime.add(copy);localByUuid.set(row.record_id,{...copy,id});pulled++;
+            await db.anime.add(copy);pulled++;
           } finally { applyingCloudData=false; }
         }
         continue;
@@ -1288,28 +1298,26 @@ async function syncCloudNow() {
       if(Date.parse(row.updated_at||0)>(row.deleted?Date.parse(item.syncUpdatedAt||0)-1:Date.parse(item.syncUpdatedAt||0))) {
         applyingCloudData=true;
         try {
-          if(row.deleted){await db.anime.delete(item.id);localByUuid.delete(row.record_id);}
+          if(row.deleted){await db.anime.delete(item.id);}
           else if(row.payload&&typeof row.payload==='object') {
             const copy={...row.payload};delete copy.id;delete copy.syncDirty;delete copy.posterPending;copy.recordUuid=row.record_id;copy.syncUpdatedAt=row.updated_at;copy.syncDirty=0;copy.posterPending=copy.posterDriveFileId?0:((copy.posterUrl!==item.posterUrl||copy.apiPosterUrl!==item.apiPosterUrl)?((copy.posterUrl||copy.apiPosterUrl)?1:0):Number(item.posterPending)||0);
-            await db.anime.update(item.id,copy);localByUuid.set(row.record_id,{...item,...copy});
+            await db.anime.update(item.id,copy);
           }
           pulled++;
         } finally { applyingCloudData=false; }
       }
     }
     let posterResult={uploaded:0,failed:0,total:0,skipped:true};
-    if(driveAccessToken) {
-      const refreshed=await db.anime.toArray();
-      posterResult=await uploadLibraryPosters(refreshed);
-    }
-    const currentLocal=await db.anime.toArray();
-    const candidates=cursor?currentLocal.filter(x=>Number(x.syncDirty)===1):currentLocal;
+    if(driveAccessToken) posterResult=await uploadLibraryPosters();
+    const candidates=cursor
+      ? await db.anime.where('syncDirty').equals(1).toArray()
+      : await db.anime.toArray();
     const upserts=[];
     for(const item of candidates) {
       if(!item.recordUuid) continue;
       const cloud=remote.get(item.recordUuid);
       if(cloud?.deleted&&Date.parse(cloud.updated_at||0)>=Date.parse(item.syncUpdatedAt||0)) continue;
-      if(cloud&&!cloud.deleted&&Date.parse(cloud.updated_at||0)>Date.parse(item.syncUpdatedAt||0)) continue;
+      if(cloud&&!cloud.deleted&&Date.parse(cloud.updated_at||0)>=Date.parse(item.syncUpdatedAt||0)) continue;
       const payload={...item};delete payload.id;delete payload.syncDirty;delete payload.posterPending;
       upserts.push({owner_id:cloudUser.id,record_id:item.recordUuid,payload,updated_at:item.syncUpdatedAt||new Date().toISOString(),deleted:false});
     }
