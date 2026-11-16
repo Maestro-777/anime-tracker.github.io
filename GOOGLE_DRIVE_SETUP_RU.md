@@ -1,7 +1,7 @@
-# AnimeVault — Google Drive для постеров (v1.3.6)
+# AnimeVault — Google Drive для постеров (v1.4.1)
 
 ## Архитектура
-- Supabase Auth (GitHub) остаётся входом в AnimeVault.
+- Supabase Auth — вход в AnimeVault через email + пароль или GitHub OAuth. Google OAuth используется отдельно для Google Drive.
 - Supabase Database хранит записи библиотеки и ID файлов Google Drive.
 - Google Drive хранит новые постеры в папке **AnimeVault Posters**.
 - IndexedDB хранит локальные Blob-копии для офлайн-режима.
@@ -26,7 +26,7 @@ npx supabase functions deploy fetch-poster
 
 ## Первый запуск
 1. Опубликовать изменения из PR на GitHub Pages.
-2. Войти прежним GitHub-аккаунтом AnimeVault.
+2. Войти в AnimeVault через email + пароль или GitHub OAuth.
 3. Открыть «Облако» → «Подключить Google Drive».
 4. Разрешить доступ к файлам, созданным AnimeVault.
 5. Нажать «Синхронизировать сейчас» или дождаться переноса.
