@@ -253,6 +253,9 @@
     @media(max-width:760px){.update-page{margin:14px 0 30px;gap:11px}.update-heading,.update-controls,.update-progress-panel,.update-log-panel{padding:15px;border-radius:15px}.update-heading{align-items:flex-start}.update-shield{width:42px;height:42px;border-radius:13px}.update-controls{align-items:stretch;flex-direction:column}.update-buttons{display:grid;grid-template-columns:1fr}.update-buttons .btn{width:100%;min-height:48px}.update-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.update-metrics>div{padding:9px}.update-metrics strong{font-size:19px}.update-progress-head{align-items:flex-start;flex-direction:column}.update-progress-head span{text-align:left}.enrich-log-list{max-height:48vh}.enrich-log-entry{grid-template-columns:66px minmax(0,1fr);font-size:11px;padding:9px 5px}}
     @media(max-width:620px){.mobile-dock{gap:1px;padding:6px 7px}.dock-item{padding:4px 1px}.dock-item small{font-size:8px}.dock-add{width:43px;height:43px;margin:0 2px}.update-heading p{font-size:12px}}
 
+  
+.player-modal{position:fixed;inset:0;z-index:100;display:none;align-items:center;justify-content:center;padding:18px;background:#000e;backdrop-filter:blur(12px)}.player-modal.is-open{display:flex}.player-panel{width:min(100%,1050px);max-height:95vh;overflow:auto;border:1px solid #34343b;border-radius:20px;background:#101014;padding:20px;box-shadow:0 30px 100px #000}.player-head{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:15px}.player-head h2{margin:0;font-size:19px}.player-head p{margin:3px 0 0;color:#85858f;font-size:12px}.player-stage{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:16/9}.player-stage video{width:100%;height:100%;display:block;background:#000;object-fit:contain}.player-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:13px 0}.player-controls label,.player-add-grid label{display:block;color:#92929c;font-size:11px}.player-controls select{width:100%;margin-top:5px;height:40px;padding:0 10px;border:1px solid #34343b;border-radius:9px;background:#1b1b20;color:#fff}.player-status{min-height:20px;color:#92929c;font-size:12px;margin:8px 0}.player-empty{padding:20px;border:1px dashed #45454d;border-radius:12px;color:#c4c4cc;text-align:center;margin:12px 0}.player-add{margin-top:15px;padding:15px;border:1px solid #303038;border-radius:13px;background:#151519}.player-add h3{font-size:13px;margin:0 0 11px}.player-add-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.player-add-grid input,.player-add-grid select{width:100%;height:39px;margin-top:5px;padding:0 9px;border:1px solid #34343b;border-radius:8px;background:#09090b;color:#fff}.player-add-grid .wide{grid-column:span 2}.player-add-actions{display:flex;justify-content:flex-end;margin-top:11px}.player-fullscreen{position:absolute;right:10px;top:10px;z-index:2}.player-stage:fullscreen{width:100vw;height:100vh;aspect-ratio:auto;border-radius:0}.player-stage:fullscreen video{width:100%;height:100%}@media(max-width:650px){.player-modal{padding:7px}.player-panel{padding:12px;border-radius:14px;max-height:97vh}.player-controls{grid-template-columns:1fr 1fr;gap:8px}.player-add-grid{grid-template-columns:1fr 1fr}.player-add-grid .wide{grid-column:1/-1}.player-head h2{font-size:16px}}
+
   </style>
 </head>
 <body>
@@ -385,11 +388,28 @@
       </form>
     </div>
   </div>
+
+  <div id="player-modal" class="player-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="player-title">
+    <section class="player-panel">
+      <header class="player-head"><div><h2 id="player-title">Просмотр аниме</h2><p id="player-subtitle"></p></div><button id="player-close" class="close-btn" type="button" aria-label="Закрыть плеер">×</button></header>
+      <div id="player-video-wrap"><div class="player-stage"><button id="player-fullscreen" class="btn player-fullscreen" type="button">⛶</button><video id="player-video" controls playsinline preload="metadata"></video></div>
+        <div class="player-controls"><label>Серия<select id="player-episode"></select></label><label>Озвучка<select id="player-voice"></select></label><label>Источник<select id="player-source"></select></label><label>Качество<select id="player-quality"><option value="-1">Авто</option></select></label></div>
+      </div>
+      <div id="player-empty" class="player-empty">Для просмотра добавьте хотя бы один видеоисточник.</div><p id="player-status" class="player-status" role="status" aria-live="polite"></p>
+      <form id="player-add-form" class="player-add"><h3>Источники видео · добавить ссылку на серию</h3>
+        <div class="player-add-grid"><label>Номер серии<input id="player-add-episode" type="number" min="1" max="9999" value="1" required></label><label>Озвучка / дорожка<input id="player-add-voice" maxlength="80" placeholder="AniLibria, AniStar, Субтитры…"></label><label>Формат<select id="player-add-type"><option value="hls">HLS (.m3u8)</option><option value="mp4">MP4</option></select></label><label class="wide">Ссылка на видео<input id="player-add-url" type="url" placeholder="https://…/episode.m3u8" required></label><label>Качество<input id="player-add-quality" maxlength="40" placeholder="1080p"></label><label>Название источника<input id="player-add-label" maxlength="80" placeholder="Основной сервер"></label></div>
+        <div class="player-add-actions"><button class="btn btn-primary" type="submit">＋ Добавить источник</button></div>
+      </form>
+      <p class="player-status">Ссылки добавляются вручную. Доступность зависит от самого видеопотока и настроек сервера.</p>
+    </section>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="https://unpkg.com/dexie@4.0.11/dist/dexie.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://accounts.google.com/gsi/client"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

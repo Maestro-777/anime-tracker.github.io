@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v148-library-dedupe';
+const CACHE_NAME = 'animevault-shell-v149-video-player';
 const APP_SHELL = [
   './',
   './index.html',

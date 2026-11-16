@@ -225,7 +225,7 @@ function createAnimeCard(item) {
         ${viewMode === 'list' && Array.isArray(item.genres) && item.genres.length ? `<div class="list-genres">${item.genres.slice(0,5).map(g => `<span>${escapeHTML(g)}</span>`).join('')}${item.genres.length > 5 ? `<span class="genre-more">+${item.genres.length-5}</span>` : ''}</div>` : ''}
         <div class="card-meta">
           <div class="episode-stepper"><button data-action="episode-down" aria-label="Уменьшить число серий">−</button><span>${Math.max(0, Number(item.currentEpisode)||0) || (status==='Просмотрено' ? Number(item.totalEpisodes)||0 : 0)} / ${Number(item.totalEpisodes)||'—'}</span><button data-action="episode-up" aria-label="Увеличить число серий">+</button></div>
-          ${watch ? `<a class="watch-link" href="${escapeHTML(watch)}" target="_blank" rel="noopener noreferrer">Смотреть ↗</a>` : `<button class="watch-link watch-link-empty" data-action="edit" type="button">Добавить ссылку ＋</button>`}
+          <button class="watch-link" data-action="play" type="button">▶ Открыть плеер</button>
         </div>
       </div>
       <div class="card-actions">
@@ -1613,6 +1613,7 @@ async function initCloudAuth() {
 }
 
 function bindEvents() {
+  bindPlayerEvents();
   els.tabAll.addEventListener('click',()=>switchStats('all'));
   els.tabFav.addEventListener('click',()=>switchStats('favorite'));
   els.tabStats.addEventListener('click',()=>switchStats('stats'));
@@ -1666,6 +1667,7 @@ function bindEvents() {
     if(!id) return;
     const action=btn.dataset.action;
     if(action==='status') return;
+    if(action==='play') { await openPlayer(id); return; }
     if(action==='favorite') await toggleFavorite(id);
     if(action==='episode-up') await changeEpisode(id,1);
     if(action==='episode-down') await changeEpisode(id,-1);
@@ -1703,6 +1705,61 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.4.5 · Объединение дублей библиотеки';
+  $('app-version').textContent='v1.5.0 · Встроенный видеоплеер';
 }
+
+let playerAnimeId=null, playerHls=null, playerLastSavedAt=0, playerActiveSource=null;
+function playerSourcesFor(item,episode){return (Array.isArray(item&&item.playerSources)?item.playerSources:[]).map((s,i)=>({...s,_index:i})).filter(s=>Number(s.episode)===Number(episode)&&safeURL(s.url));}
+function playerEpisodes(item){return [...new Set((item.playerSources||[]).map(s=>Number(s.episode)).filter(n=>Number.isInteger(n)&&n>0))].sort((a,b)=>a-b);}
+async function openPlayer(id){
+ await savePlayerProgress(true);playerActiveSource=null;
+ const item=await db.anime.get(Number(id));if(!item)return;playerAnimeId=Number(id);
+ $('player-title').textContent=item.titleRu||'Просмотр аниме';$('player-subtitle').textContent=item.titleOrig||'';
+ $('player-modal').classList.add('is-open');$('player-modal').setAttribute('aria-hidden','false');
+ const eps=playerEpisodes(item),cur=Math.max(1,Number(item.currentEpisode)||1),initial=eps.includes(cur)?cur:(eps[0]||cur);
+ $('player-episode').innerHTML=(eps.length?eps:[initial]).map(n=>'<option value="'+n+'" '+(n===initial?'selected':'')+'>'+n+' серия</option>').join('');
+ $('player-add-episode').value=String(initial);
+ if(!eps.length){$('player-empty').classList.remove('hidden');$('player-video-wrap').classList.add('hidden');$('player-status').textContent='Добавьте ссылку на серию в блоке «Источники видео» ниже.';}
+ else await selectPlayerEpisode(initial);
+}
+function renderPlayerSources(sources,voice){const filtered=sources.filter(s=>String(s.voice||'Оригинал')===voice);$('player-source').innerHTML=filtered.map(s=>'<option value="'+s._index+'">'+escapeHTML(s.label||s.quality||s.type.toUpperCase()+' источник '+(s._index+1))+'</option>').join('');}
+async function selectPlayerEpisode(episode){
+ await savePlayerProgress(true);
+ const item=await db.anime.get(playerAnimeId);if(!item)return;const sources=playerSourcesFor(item,episode),voices=[...new Set(sources.map(s=>String(s.voice||'Оригинал')))];
+ $('player-voice').innerHTML=voices.map(v=>'<option value="'+escapeHTML(v)+'">'+escapeHTML(v)+'</option>').join('');
+ if(!voices.length){$('player-source').innerHTML='';$('player-status').textContent='Для этой серии пока нет источников. Добавьте ссылку ниже.';$('player-video-wrap').classList.add('hidden');$('player-empty').classList.remove('hidden');return;}
+ $('player-video-wrap').classList.remove('hidden');$('player-empty').classList.add('hidden');renderPlayerSources(sources,voices[0]);await loadPlayerSource(Number($('player-source').value));
+}
+async function loadPlayerSource(index){
+ await savePlayerProgress(true);
+ const item=await db.anime.get(playerAnimeId);if(!item)return;const ep=Number($('player-episode').value),voice=$('player-voice').value,source=(item.playerSources||[])[index];
+ if(!source||Number(source.episode)!==ep||String(source.voice||'Оригинал')!==voice)return;
+ const url=safeURL(source.url);if(!url)return;playerActiveSource={...source,index,episode:ep};
+ const video=$('player-video');if(playerHls){playerHls.destroy();playerHls=null;}video.pause();video.removeAttribute('src');video.load();
+ $('player-quality').innerHTML='<option value="-1">Авто</option>';$('player-status').textContent='Источник: '+(source.label||source.type.toUpperCase())+' · '+voice;
+ const restore=async()=>{const fresh=await db.anime.get(playerAnimeId),pos=Number(fresh&&fresh.playerProgress&&fresh.playerProgress[ep])||0;if(pos>0&&Number.isFinite(video.duration)&&pos<video.duration-5)video.currentTime=pos;};
+ if(source.type==='hls'||/\.m3u8(?:$|[?#])/i.test(url)){
+  if(window.Hls&&Hls.isSupported()){playerHls=new Hls({enableWorker:true,capLevelToPlayerSize:true});playerHls.loadSource(url);playerHls.attachMedia(video);playerHls.on(Hls.Events.MANIFEST_PARSED,()=>{$('player-quality').innerHTML='<option value="-1">Авто</option>'+playerHls.levels.map((l,i)=>'<option value="'+i+'">'+(l.height?l.height+'p':Math.round((l.bitrate||0)/1000)+' kbps')+'</option>').join('');playerHls.currentLevel=-1;restore();});playerHls.on(Hls.Events.ERROR,(_e,d)=>{if(d.fatal)$('player-status').textContent='Ошибка источника. Попробуйте другой источник.';});}
+  else if(video.canPlayType('application/vnd.apple.mpegurl')){video.src=url;video.addEventListener('loadedmetadata',restore,{once:true});}
+  else $('player-status').textContent='HLS не поддерживается этим браузером. Попробуйте MP4.';
+ }else{video.src=url;video.addEventListener('loadedmetadata',restore,{once:true});}
+}
+async function savePlayerProgress(force){const v=$('player-video');if(!playerAnimeId||!v||!Number.isFinite(v.currentTime)||!playerActiveSource||(!force&&Date.now()-playerLastSavedAt<30000))return;playerLastSavedAt=Date.now();const item=await db.anime.get(playerAnimeId);if(!item)return;const progress={...(item.playerProgress||{}),[playerActiveSource.episode]:Math.floor(v.currentTime)};await db.anime.update(playerAnimeId,{playerProgress:progress});}
+async function closePlayer(){await savePlayerProgress(true);playerActiveSource=null;if(playerHls){playerHls.destroy();playerHls=null;}const v=$('player-video');v.pause();v.removeAttribute('src');v.load();$('player-modal').classList.remove('is-open');$('player-modal').setAttribute('aria-hidden','true');}
+async function addPlayerSource(e){
+ e.preventDefault();const episode=Math.max(1,Number($('player-add-episode').value)||1),voice=$('player-add-voice').value.trim()||'Оригинал',url=safeURL($('player-add-url').value);
+ if(!url){showToast('Укажите корректную ссылку HTTP(S).','error');return;}const type=$('player-add-type').value,quality=$('player-add-quality').value.trim(),label=$('player-add-label').value.trim()||quality||type.toUpperCase()+' источник';
+ const item=await db.anime.get(playerAnimeId);if(!item)return;await db.anime.update(playerAnimeId,{playerSources:[...(item.playerSources||[]),{episode,voice,url,type,quality,label}]});
+ $('player-add-url').value='';$('player-add-label').value='';const updated=await db.anime.get(playerAnimeId),allEpisodes=playerEpisodes(updated);$('player-episode').innerHTML=allEpisodes.map(n=>'<option value="'+n+'" '+(n===episode?'selected':'')+'>'+n+' серия</option>').join('');await selectPlayerEpisode(episode);showToast('Источник добавлен.','success');
+}
+function bindPlayerEvents(){
+ $('player-close').addEventListener('click',closePlayer);$('player-modal').addEventListener('click',e=>{if(e.target===$('player-modal'))closePlayer();});document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('player-modal').classList.contains('is-open'))closePlayer();});
+ $('player-episode').addEventListener('change',e=>selectPlayerEpisode(Number(e.target.value)));
+ $('player-voice').addEventListener('change',async e=>{const item=await db.anime.get(playerAnimeId);if(!item)return;renderPlayerSources(playerSourcesFor(item,Number($('player-episode').value)),e.target.value);await loadPlayerSource(Number($('player-source').value));});
+ $('player-source').addEventListener('change',e=>loadPlayerSource(Number(e.target.value)));$('player-quality').addEventListener('change',e=>{if(playerHls)playerHls.currentLevel=Number(e.target.value);});
+ $('player-add-form').addEventListener('submit',addPlayerSource);$('player-fullscreen').addEventListener('click',()=>{const el=$('player-video-wrap');if(document.fullscreenElement)document.exitFullscreen();else if(el.requestFullscreen)el.requestFullscreen();});
+ $('player-video').addEventListener('timeupdate',()=>savePlayerProgress(false));$('player-video').addEventListener('pause',()=>savePlayerProgress(true));
+ $('player-video').addEventListener('ended',async()=>{const item=await db.anime.get(playerAnimeId);if(!item)return;const ep=Number($('player-episode').value);await db.anime.update(playerAnimeId,{currentEpisode:Math.max(Number(item.currentEpisode)||0,ep),playerProgress:{...(item.playerProgress||{}),[ep]:0}});showToast('Серия завершена. Прогресс сохранён.','success');});
+}
+
 document.addEventListener('DOMContentLoaded',init);
