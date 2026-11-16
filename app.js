@@ -497,7 +497,7 @@ async function enrichLibrary() {
         setEnrichmentSummary(`Обработано ${done}/${queue.length} · найдено ${found} · без совпадения ${missed} · ошибок ${errors}`);
       }
       if(done%10<5||done===queue.length) await loadAnimeData();
-      if(i+3<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,1200));
+      if(i+3<queue.length&&!enrichmentCancel) await new Promise(r=>setTimeout(r,2200));
     }
     await loadAnimeData();
     const status = enrichmentCancel ? `Остановлено: ${done} из ${queue.length}` : `Завершено: найдено ${found}, не найдено ${missed}, ошибок ${errors}`;
@@ -1236,7 +1236,7 @@ async function readRemoteChanges(cursor) {
   const since=cursor?new Date(Math.max(0,Date.parse(cursor)-2000)).toISOString():null;
   for(let offset=0;;offset+=1000) {
     const data=await retryCloudRequest(async()=>{
-      let query=supabaseClient.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).range(offset,offset+999);
+      let query=supabaseClient.from('animevault_records').select('record_id,payload,updated_at,deleted').eq('owner_id',cloudUser.id).order('updated_at',{ascending:true}).order('record_id',{ascending:true}).range(offset,offset+999);
       if(since) query=query.gt('updated_at',since);
       const {data,error}=await query;
       return {data,error};
