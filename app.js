@@ -747,7 +747,7 @@ function parseCSV(text) {
     episode: find('текущая серия','серия','episode'),
     link: find('ссылка на просмотр','ссылка','watchlink','watch link'),
     poster: find('ссылка на постер','постер','poster'),
-    anilistId: find('anilist id'), malId:find('mal id'), apiTitle:find('название api'), description: find('описание','description'), descriptionRu:find('русское описание','описание ru','description ru'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
+    anilistId: find('anilist id'), malId:find('mal id'), apiTitle:find('название api'), description: find('описание','description'), descriptionRu:find('описание на русском','русское описание','описание ru','description ru'), totalEpisodes: find('всего серий','total episodes'), duration: find('длительность серии','episode duration'), format: find('формат','format'), year: find('год','year'), score: find('оценка','score'), genres: find('жанры','genres'), apiPoster: find('постер api'), metadataUpdated: find('дата обновления api'), metadataAttempt:find('дата попытки поиска anilist'), metadataLookupStatus:find('статус поиска anilist')
   };
   if (idx.ru < 0) throw new Error('Не найден столбец с русским названием.');
   const result=[];
