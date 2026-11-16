@@ -329,7 +329,7 @@
       <div class="update-log-panel"><div class="update-log-head"><div><strong>Журнал обновления</strong><small>События сохраняются на этом устройстве и остаются после закрытия страницы.</small></div><button id="btn-clear-enrich-log" class="btn" type="button">Очистить</button></div><div id="enrich-log-list" class="enrich-log-list" role="log" aria-live="polite" aria-relevant="additions"></div></div>
     </section>
     <section id="cloud-page" class="update-page hidden" aria-labelledby="cloud-title">
-      <div class="update-heading"><div><span class="eyebrow">SUPABASE · CLOUD</span><h1 id="cloud-title">Облачная синхронизация</h1><p>Локальная библиотека продолжает работать офлайн. После входа изменения будут переноситься между устройствами.</p></div><span class="update-shield">☁</span></div>
+      <div class="update-heading"><div><span class="eyebrow">SUPABASE + GOOGLE DRIVE</span><h1 id="cloud-title">Облачная синхронизация</h1><p>Локальная библиотека продолжает работать офлайн. После входа изменения будут переноситься между устройствами.</p></div><span class="update-shield">☁</span></div>
       <div class="chart-panel" style="max-width:620px">
         <form id="cloud-auth-form">
           <h3>Аккаунт AnimeVault</h3>
@@ -342,7 +342,7 @@
           <label class="field" style="display:block;margin:12px 0 5px;color:#a1a1aa;font-size:12px">Пароль (минимум 8 символов)</label><input id="cloud-password" class="search" style="width:100%;padding-left:13px" type="password" autocomplete="current-password" minlength="8" required placeholder="••••••••">
           <button id="cloud-submit" class="btn btn-primary" type="submit" style="margin-top:15px;width:100%">Войти</button>
         </form>
-        <div id="cloud-account" class="hidden"><h3>Аккаунт подключён</h3><p id="cloud-user" style="color:#f4f4f5"></p><p style="color:#a1a1aa;font-size:12px">Синхронизация работает при открытом приложении, возвращении в него и восстановлении сети. Постеры копируются в Supabase Storage; приоритет у облачной копии, исходная ссылка сохраняется как резервная.</p><button id="cloud-sync-now" class="btn btn-primary" type="button">Синхронизировать сейчас</button> <button id="cloud-signout" class="btn" type="button">Выйти</button><p id="cloud-last-sync" style="color:#71717a;font-size:11px"></p></div>
+        <div id="cloud-account" class="hidden"><h3>Аккаунт подключён</h3><p id="cloud-user" style="color:#f4f4f5"></p><p style="color:#a1a1aa;font-size:12px">Supabase хранит записи библиотеки. Постеры сохраняются в твоём Google Drive, а IndexedDB хранит локальный кэш для офлайн-доступа.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0"><button id="cloud-drive-connect" class="btn btn-primary" type="button">Подключить Google Drive</button><button id="cloud-drive-disconnect" class="btn hidden" type="button">Отключить Google Drive</button></div><p id="cloud-drive-status" style="color:#a1a1aa;font-size:12px" role="status">Google Drive не подключён.</p><button id="cloud-sync-now" class="btn btn-primary" type="button">Синхронизировать сейчас</button> <button id="cloud-signout" class="btn" type="button">Выйти</button><p id="cloud-last-sync" style="color:#71717a;font-size:11px"></p></div>
         <p id="cloud-status" role="status" aria-live="polite" style="margin:15px 0 0;padding:11px;border-radius:10px;background:#09090b;color:#d4d4d8;font-size:12px"></p>
         <details id="poster-log-wrap" style="margin-top:12px;border:1px solid #303036;border-radius:10px;padding:10px;background:#09090b"><summary style="cursor:pointer;color:#f4f4f5;font-size:12px;font-weight:700">Подробный журнал постеров</summary><div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0"><button id="poster-log-copy" class="btn" type="button">Копировать журнал</button><button id="poster-log-clear" class="btn" type="button">Очистить журнал</button></div><div id="poster-log-summary" style="color:#a1a1aa;font-size:12px;margin-bottom:8px">Здесь появятся результаты загрузки.</div><div id="poster-log-list" role="log" aria-live="polite" style="display:grid;gap:8px;max-height:420px;overflow:auto"></div></details>
       </div>
@@ -386,6 +386,7 @@
 
   <script src="https://unpkg.com/dexie@4.0.11/dist/dexie.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://accounts.google.com/gsi/client"></script>
   <script src="./app.js"></script>
 </body>
 </html>
