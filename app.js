@@ -433,7 +433,7 @@ async function enrichOne(item, metadataMap=null) {
   const candidates=[item.titleOrig,item.titleRu,...String(item.titleAlt||'').split(/[,;|]/)].map(x=>String(x||'').trim()).filter((x,i,a)=>x&&a.indexOf(x)===i).slice(0,3);
   if (!candidates.length && !item.anilistId) return 'no_title';
   try {
-    let russianOnly=!item.anilistId&&(!!item.metadataUpdatedAt||item.metadataLookupStatus==='found'||item.metadataLookupStatus==='not_found');
+    let russianOnly=!item.anilistId&&(item.metadataLookupStatus==='found'||item.metadataLookupStatus==='not_found');
     let meta=(item.anilistId||russianOnly)?{}:null;
     if(!item.anilistId&&!russianOnly) {
       let lookup=null;
@@ -450,7 +450,14 @@ async function enrichOne(item, metadataMap=null) {
     const patch={...meta,metadataUpdatedAt:meta.anilistId?checkedAt:(item.metadataUpdatedAt||checkedAt),metadataLookupAttemptedAt:checkedAt,metadataLookupAttempts:(Number(item.metadataLookupAttempts)||0)+1,metadataRetryAt:null,metadataLookupStatus:meta.metadataProvider||item.metadataLookupStatus==='found'?'found':(russianOnly?'not_found':'found')};
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
-    if(!item.descriptionRu || item.descriptionRuStatus==='error') {
+    if(!item.descriptionRu && meta.metadataProvider==='Shikimori' && /[А-Яа-яЁё]/.test(String(meta.description||''))) {
+      patch.descriptionRu=String(meta.description).slice(0,4000);
+      patch.descriptionRuSource='shikimori';
+      patch.descriptionRuStatus='found';
+      patch.descriptionRuUpdatedAt=new Date().toISOString();
+      patch.descriptionRuRetryAt=null;
+    }
+    if(!patch.descriptionRu && (!item.descriptionRu || item.descriptionRuStatus==='error')) {
       try {
         const ru=await fetchRussianDescription(merged);
         if(ru?.descriptionRu) {
@@ -542,7 +549,7 @@ async function enrichLibrary() {
       if(enrichmentCancel) break;
       if(!navigator.onLine){addEnrichmentLog('Соединение пропало. Очередь остановлена; необработанные записи останутся в ожидании.','error');break;}
       const batch=queue.slice(i,i+3);
-      const needAni=batch.filter(x=>!x.anilistId&&x.metadataLookupStatus!=='found'&&x.metadataLookupStatus!=='not_found'&&!x.metadataUpdatedAt);
+      const needAni=batch.filter(x=>!x.anilistId&&x.metadataLookupStatus!=='found'&&x.metadataLookupStatus!=='not_found');
       const titles=[...new Set(needAni.flatMap(x=>[x.titleOrig,x.titleRu,...String(x.titleAlt||'').split(/[,;|]/)].map(v=>String(v||'').trim()).filter(Boolean).slice(0,3)))];
       let metadataMap=new Map(),metadataBatchError=null;
       if(titles.length) {
