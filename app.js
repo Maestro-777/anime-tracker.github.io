@@ -1126,9 +1126,8 @@ async function ensureLocalCloudIds() {
   for(const row of rows) {
     if(!row.recordUuid) {
       const uuid=crypto.randomUUID(),updatedAt=new Date().toISOString();
-      await db.anime.update(row.id,{recordUuid:uuid,syncUpdatedAt:updatedAt});
-      await db.sync_meta.put({key:`dirty:${uuid}`,value:{recordUuid:uuid,updatedAt}});
-    } else if(!row.syncUpdatedAt) await db.anime.update(row.id,{syncUpdatedAt:new Date().toISOString()});
+      await db.anime.update(row.id,{recordUuid:uuid,syncUpdatedAt:updatedAt,syncDirty:1});
+    } else if(!row.syncUpdatedAt) await db.anime.update(row.id,{syncUpdatedAt:new Date().toISOString(),syncDirty:1});
   }
 }
 async function uploadPosterToCloud(item) {
