@@ -34,7 +34,7 @@
     .search,.filter{width:100%;height:40px;border:1px solid #303036;background:#09090b;border-radius:9px;color:#e4e4e7;padding:0 13px;font-size:13px}
     .search{padding-left:40px}.search::placeholder{color:#71717a}.filter{max-width:205px}
     .stats{display:flex;justify-content:space-between;align-items:center;color:#71717a;font-size:12px;margin:13px 2px 18px}
-    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}.grid.view-list{display:flex;flex-direction:column;gap:9px}.view-switch{display:flex;gap:5px;align-items:center}.view-switch .btn.active{background:#7f1d1d;border-color:#ef4444;color:#fff}.filter-row{display:flex;gap:9px;flex-wrap:wrap}.filter-row .filter{max-width:none;min-width:145px;flex:1}.toolbar{flex-wrap:wrap}.toolbar .search-wrap{min-width:220px}.anime-card.list-card{display:grid;grid-template-columns:76px minmax(0,1fr) auto;align-items:center;min-height:112px}.list-card .poster-wrap{height:110px;width:76px;border:0;border-right:1px solid #27272a}.list-card .poster-shade{display:none}.list-card .status-badge{bottom:5px;left:5px;font-size:8px;padding:2px 4px}.list-card .favorite-btn{top:5px;right:5px;width:27px;height:27px;font-size:16px}.list-card .card-content{padding:10px 14px}.list-card .anime-title{white-space:normal}.list-card .card-actions{padding:8px 12px;flex-direction:column;min-width:105px}.list-card .card-meta{justify-content:flex-start;flex-wrap:wrap;margin-top:8px;padding-top:7px}.list-card .anime-subtitle{white-space:normal}.stats-page{margin-top:24px}.stats-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.kpi,.chart-panel{background:#141418;border:1px solid #29292f;border-radius:14px;padding:16px}.kpi small{color:#92929c}.kpi strong{display:block;font-size:25px;margin-top:5px}.charts-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}.chart-panel h3{font-size:14px;margin:0 0 14px}.bar-row{display:grid;grid-template-columns:100px 1fr 36px;gap:9px;align-items:center;margin:10px 0;font-size:12px}.bar-track{height:10px;background:#29292f;border-radius:20px;overflow:hidden}.bar-fill{height:100%;background:linear-gradient(90deg,#b91c1c,#f87171);border-radius:20px}.donut-wrap{display:flex;gap:18px;align-items:center;flex-wrap:wrap}.donut{width:150px;height:150px;border-radius:50%;position:relative;flex:none}.donut:after{content:"";position:absolute;inset:27px;background:#141418;border-radius:50%}.legend{display:grid;gap:7px;font-size:12px;color:#c4c4cc}.legend span:before{content:"";display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--c);margin-right:7px}.api-progress{margin:12px 0;color:#a1a1aa;font-size:12px}.description{color:#a1a1aa;font-size:12px;line-height:1.45;margin-top:7px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
     .anime-card{display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;min-width:0;border:1px solid #29292f;border-radius:17px;background:linear-gradient(180deg,#18181b,#0c0c0f);transition:transform .2s,border-color .2s,box-shadow .2s}
     .anime-card:hover{transform:translateY(-3px);border-color:#52525b;box-shadow:0 16px 35px #0008}
     .poster-wrap{height:220px;position:relative;overflow:hidden;background:#18181b;border-bottom:1px solid #27272a}
@@ -78,8 +78,8 @@
     .is-busy{cursor:progress}.is-busy main{opacity:.7;pointer-events:none}
     .footer{max-width:1200px;margin:35px auto 0;padding:0 22px;color:#52525b;font-size:11px;display:flex;justify-content:space-between}
     .hidden{display:none!important}
-    @media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.header-inner{flex-wrap:wrap}.brand{margin-right:auto}}
-    @media(max-width:620px){body{padding-bottom:25px}.header-inner{padding:12px 14px;gap:10px}.brand-name{font-size:17px}.brand-mark{height:27px}
+    @media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stats-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.header-inner{flex-wrap:wrap}.brand{margin-right:auto}}
+    @media(max-width:620px){body{padding-bottom:25px}.charts-grid{grid-template-columns:1fr}.filter-row{display:grid;grid-template-columns:1fr 1fr}.filter-row .filter{min-width:0}.anime-card.list-card{grid-template-columns:62px minmax(0,1fr)}.list-card .poster-wrap{width:62px;height:100%;min-height:112px}.list-card .card-actions{grid-column:2;flex-direction:row;padding:0 10px 9px}.list-card .card-content{padding:9px 10px 5px}.header-inner{padding:12px 14px;gap:10px}.brand-name{font-size:17px}.brand-mark{height:27px}
       .header-inner{justify-content:center}.brand{width:100%;justify-content:center}.tabs{order:2}.header-actions{order:3;width:100%;justify-content:center;flex-wrap:wrap}
       .container{padding:0 13px}.toolbar{margin-top:16px;padding:10px;flex-direction:column}.filter{max-width:none}
       .stats{font-size:11px;margin-bottom:12px}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
@@ -102,12 +102,12 @@
       <div class="brand"><div class="brand-mark"></div><div class="brand-name">Anime<span>Vault</span></div></div>
       <nav class="tabs" aria-label="Фильтр библиотеки">
         <button id="tab-all" class="tab active" aria-pressed="true">Все медиа</button>
-        <button id="tab-fav" class="tab" aria-pressed="false">★ Избранное</button>
+        <button id="tab-fav" class="tab" aria-pressed="false">★ Избранное</button><button id="tab-stats" class="tab" aria-pressed="false">▥ Статистика</button>
       </nav>
       <div class="header-actions">
         <label class="btn file-label">⇧ Импорт<input type="file" id="csv-file" accept=".csv,text/csv"></label>
         <button id="btn-export" class="btn">Экспорт CSV</button>
-        <button id="btn-backup" class="btn btn-quiet" title="Скачать полную резервную копию">Бэкап JSON</button>
+        <button id="btn-backup" class="btn btn-quiet" title="Скачать полную резервную копию">Бэкап JSON</button><button id="btn-install" class="btn hidden">Установить приложение</button>
         <button id="btn-add-modal" class="btn btn-primary">＋ Добавить</button>
       </div>
     </div>
@@ -124,10 +124,22 @@
         <option value="Отложено">⏳ Отложено</option>
         <option value="Брошено">✕ Брошено</option>
       </select>
+      <div class="filter-row">
+        <select id="filter-genre" class="filter"><option value="Все">Все жанры</option></select>
+        <select id="filter-format" class="filter"><option value="Все">Все форматы</option><option>TV</option><option>Movie</option><option>OVA</option><option>ONA</option><option>Special</option></select>
+        <select id="filter-year" class="filter"><option value="Все">Все годы</option></select>
+        <select id="filter-progress" class="filter"><option value="Все">Любой прогресс</option><option value="С постером">С постером</option><option value="Без постера">Без постера</option><option value="С метаданными">С данными API</option><option value="Без метаданных">Без данных API</option></select>
+      </div>
+      <div class="view-switch"><span style="color:#92929c;font-size:12px">Вид:</span><button id="view-cards" class="btn active" type="button">▦ Карточки</button><button id="view-list" class="btn" type="button">☰ Список</button></div>
     </section>
-    <div class="stats"><span id="library-count">0 аниме</span><span id="total-count">0 в библиотеке</span></div>
+    <div class="stats"><span id="library-count">0 аниме</span><span id="total-count">0 в библиотеке</span><span id="bulk-meta-state"></span></div>
     <section id="anime-list" class="grid" aria-live="polite"></section>
+    <section id="stats-page" class="stats-page hidden">
+      <div class="stats-kpis" id="stats-kpis"></div>
+      <div class="charts-grid"><div class="chart-panel"><h3>Распределение по статусам</h3><div id="status-chart"></div></div><div class="chart-panel"><h3>Просмотренные серии и время</h3><div id="watch-chart"></div></div><div class="chart-panel"><h3>Библиотека по форматам</h3><div id="format-chart"></div></div><div class="chart-panel"><h3>Недостающие данные</h3><div id="metadata-chart"></div></div></div>
+    </section>
     <section id="empty-state" class="empty-state hidden"><strong>Ваша медиатека пуста или ничего не найдено</strong><small>Импортируйте CSV или измените фильтры</small></section>
+    <div class="stats" style="margin-top:18px;gap:10px;flex-wrap:wrap"><span>Сведения об аниме: AniList API</span><button id="btn-enrich-all" class="btn">Обновить данные для всей библиотеки</button><button id="btn-enrich-missing" class="btn">Только без данных</button><button id="btn-stop-enrich" class="btn hidden">Остановить</button><span id="enrich-progress" class="api-progress"></span></div>
     <p id="import-status" class="hidden" aria-live="polite"></p>
   </main>
   <footer class="footer"><span>AnimeVault · Личная библиотека аниме</span><span id="app-version">PWA</span></footer>
@@ -142,11 +154,11 @@
           <div class="field full"><label for="form-title-orig">Оригинальное название</label><input id="form-title-orig" maxlength="250"></div>
           <div class="field full"><label for="form-title-alt">Альтернативные названия</label><input id="form-title-alt" maxlength="1000"></div>
           <div class="field"><label for="form-status">Статус просмотра</label><select id="form-status"><option>Смотрю</option><option>В планах</option><option>Просмотрено</option><option>Отложено</option><option>Брошено</option></select></div>
-          <div class="field episode-field" id="form-episodes-container"><label for="form-episodes">Текущая серия</label><input type="number" id="form-episodes" min="0" max="99999" value="0"></div>
+          <div class="field episode-field" id="form-episodes-container"><label for="form-episodes">Просмотрено серий</label><input type="number" id="form-episodes" min="0" max="99999" value="0"></div>
           <div class="field full"><label for="form-link">Ссылка на просмотр</label><input type="url" id="form-link" placeholder="https://…"></div>
           <div class="field full">
             <label for="form-poster">Постер — ссылка или автоматический поиск</label>
-            <div class="poster-tools"><input type="url" id="form-poster" placeholder="https://…"><button type="button" id="btn-search-poster" class="btn">Найти на Shikimori</button></div>
+            <div class="poster-tools"><input type="url" id="form-poster" placeholder="https://…"><button type="button" id="btn-search-poster" class="btn">Найти через AniList</button></div>
             <div class="poster-preview-wrap"><img id="poster-preview" class="poster-preview" src="icon-192.png" alt="Предпросмотр постера"><span>Можно вставить прямую ссылку на изображение вручную</span></div>
           </div>
           <div class="field full"><div class="check-row"><input type="checkbox" id="form-favorite"><label for="form-favorite">Добавить это аниме в избранное</label></div></div>
