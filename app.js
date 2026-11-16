@@ -140,6 +140,8 @@ function renderList(items) {
         <h2 class="anime-title" title="${title}">${title}</h2>
         <p class="anime-subtitle" title="${original}">${original}${alt ? ` <span>· ${alt}</span>` : ''}</p>
         ${description ? `<p class="description">${description}</p>` : ''}
+        ${viewMode === 'list' ? `<div class="list-details">${[item.year, item.format, item.totalEpisodes ? `${item.totalEpisodes} серий` : '', item.episodeDuration ? `${item.episodeDuration} мин/серия` : ''].filter(Boolean).map(x => `<span>${escapeHTML(String(x))}</span>`).join('')}</div>` : ''}
+        ${viewMode === 'list' && Array.isArray(item.genres) && item.genres.length ? `<div class="list-genres">${item.genres.slice(0,5).map(g => `<span>${escapeHTML(g)}</span>`).join('')}${item.genres.length > 5 ? `<span class="genre-more">+${item.genres.length-5}</span>` : ''}</div>` : ''}
         <div class="card-meta">
           ${`<div class="episode-stepper"><button data-action="episode-down" aria-label="Уменьшить число серий">−</button><span>${Math.max(0, Number(item.currentEpisode)||0) || (status==='Просмотрено' ? Number(item.totalEpisodes)||0 : 0)} сер.</span><button data-action="episode-up" aria-label="Увеличить число серий">+</button></div>`}
           ${watch ? `<a class="watch-link" href="${escapeHTML(watch)}" target="_blank" rel="noopener noreferrer">Смотреть ↗</a>` : ''}
@@ -260,11 +262,75 @@ async function enrichLibrary(onlyMissing=false) {
   }
 }
 function refreshFilterOptions(items) {
-  const genres=[...new Set(items.flatMap(x=>x.genres||[]))].sort((a,b)=>a.localeCompare(b,'ru'));
+  const apiGenres = Array.isArray(window.animeVaultApiGenres) ? window.animeVaultApiGenres : [];
+  const storedGenres = items.flatMap(x => Array.isArray(x.genres) ? x.genres : []);
+  const genres=[...new Set([...apiGenres, ...storedGenres].filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ru'));
   const years=[...new Set(items.map(x=>x.year).filter(Boolean).map(String))].sort((a,b)=>Number(b)-Number(a));
   const fill=(select, values, first)=>{if(!select)return;const selected=select.value||'Все';select.innerHTML=`<option value="Все">${first}</option>`+values.map(v=>`<option value="${escapeHTML(v)}">${escapeHTML(v)}</option>`).join('');select.value=values.includes(selected)?selected:'Все';};
   fill(els.genre,genres,'Все жанры'); fill(els.year,years,'Все годы');
+  renderActiveFilters();
 }
+
+
+async function loadAniListGenreCollection() {
+  const cacheKey='animevault-anilist-genres-v1';
+  try {
+    const cached=JSON.parse(localStorage.getItem(cacheKey)||'null');
+    if(cached && Array.isArray(cached.genres) && Date.now()-cached.savedAt < 30*24*60*60*1000) {
+      window.animeVaultApiGenres=cached.genres;
+      refreshFilterOptions(await db.anime.toArray());
+      return;
+    }
+  } catch {}
+  try {
+    const query='query { GenreCollection }';
+    const response=await fetch(ANILIST_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({query})});
+    if(!response.ok) throw new Error(`AniList HTTP ${response.status}`);
+    const json=await response.json();
+    const genres=Array.isArray(json?.data?.GenreCollection)?json.data.GenreCollection.filter(Boolean):[];
+    if(genres.length) {
+      window.animeVaultApiGenres=genres;
+      localStorage.setItem(cacheKey,JSON.stringify({genres,savedAt:Date.now()}));
+      refreshFilterOptions(await db.anime.toArray());
+    }
+  } catch(err) {
+    console.warn('AniList GenreCollection unavailable; using genres saved with anime metadata.',err);
+    window.animeVaultApiGenres=[];
+  }
+}
+
+function activeFilterEntries() {
+  return [
+    ['status',filterStatus,'Статус'],
+    ['genre',filterGenre,'Жанр'],
+    ['format',filterFormat,'Формат'],
+    ['year',filterYear,'Год'],
+    ['progress',filterProgress,'Данные']
+  ].filter(([,value])=>value && value!=='Все');
+}
+function renderActiveFilters() {
+  const host=$('active-filters'); if(!host) return;
+  const entries=activeFilterEntries();
+  host.innerHTML=entries.map(([key,value,label])=>`<span class="filter-chip">${label}: ${escapeHTML(value)}<button type="button" data-clear-filter="${key}" aria-label="Убрать фильтр ${label}">×</button></span>`).join('');
+  host.classList.toggle('hidden',entries.length===0);
+  const count=$('filter-count'); count.textContent=String(entries.length); count.classList.toggle('hidden',entries.length===0);
+}
+function clearOneFilter(key) {
+  const map={status:['filter-status',v=>filterStatus=v],genre:['filter-genre',v=>filterGenre=v],format:['filter-format',v=>filterFormat=v],year:['filter-year',v=>filterYear=v],progress:['filter-progress',v=>filterProgress=v]};
+  if(!map[key]) return;
+  const [id,setter]=map[key]; $(id).value='Все'; setter('Все'); loadAnimeData();
+}
+function clearAllFilters() {
+  filterStatus=filterGenre=filterFormat=filterYear=filterProgress='Все';
+  ['filter-status','filter-genre','filter-format','filter-year','filter-progress'].forEach(id=>$(id).value='Все');
+  loadAnimeData();
+}
+function toggleFilterPanel(force) {
+  const panel=$('filter-panel'), button=$('btn-filter-toggle');
+  const open=typeof force==='boolean'?force:panel.classList.contains('hidden');
+  panel.classList.toggle('hidden',!open); button.setAttribute('aria-expanded',String(open));
+}
+
 function setView(mode) {
   viewMode=mode; localStorage.setItem('animevault-view',mode);
   $('view-cards').classList.toggle('active',mode==='cards'); $('view-list').classList.toggle('active',mode==='list');
@@ -276,6 +342,9 @@ function switchStats(tab) {
   els.list.classList.toggle('hidden',isStats); els.empty.classList.toggle('hidden',isStats || currentItems.length>0);
   $('tab-all').classList.toggle('active',tab==='all'); $('tab-fav').classList.toggle('active',tab==='favorite'); $('tab-stats').classList.toggle('active',isStats);
   $('tab-all').setAttribute('aria-pressed',String(tab==='all')); $('tab-fav').setAttribute('aria-pressed',String(tab==='favorite')); $('tab-stats').setAttribute('aria-pressed',String(isStats));
+  $('mobile-library')?.classList.toggle('active',tab==='all');
+  $('mobile-fav')?.classList.toggle('active',tab==='favorite');
+  $('mobile-stats')?.classList.toggle('active',isStats);
   document.querySelector('.toolbar').classList.toggle('hidden',isStats); document.querySelector('.stats').classList.toggle('hidden',isStats);
   if(isStats) renderStatistics(); else loadAnimeData();
 }
@@ -592,6 +661,14 @@ function bindEvents() {
   els.tabFav.addEventListener('click',()=>switchStats('favorite'));
   els.tabStats.addEventListener('click',()=>switchStats('stats'));
   $('view-cards').addEventListener('click',()=>setView('cards')); $('view-list').addEventListener('click',()=>setView('list'));
+  $('btn-filter-toggle').addEventListener('click',()=>toggleFilterPanel());
+  $('btn-clear-filters').addEventListener('click',clearAllFilters);
+  $('active-filters').addEventListener('click',e=>{const btn=e.target.closest('[data-clear-filter]');if(btn)clearOneFilter(btn.dataset.clearFilter);});
+  $('mobile-library').addEventListener('click',()=>switchStats('all'));
+  $('mobile-fav').addEventListener('click',()=>switchStats('favorite'));
+  $('mobile-stats').addEventListener('click',()=>switchStats('stats'));
+  $('mobile-add').addEventListener('click',()=>openModal());
+  document.addEventListener('click',e=>{const menu=document.querySelector('.manage-menu');if(menu && !menu.contains(e.target))menu.open=false;});
   els.genre.addEventListener('change',e=>{filterGenre=e.target.value;loadAnimeData();}); els.format.addEventListener('change',e=>{filterFormat=e.target.value;loadAnimeData();}); els.year.addEventListener('change',e=>{filterYear=e.target.value;loadAnimeData();}); els.progress.addEventListener('change',e=>{filterProgress=e.target.value;loadAnimeData();});
   $('btn-enrich-all').addEventListener('click',()=>enrichLibrary(false)); $('btn-enrich-missing').addEventListener('click',()=>enrichLibrary(true)); $('btn-stop-enrich').addEventListener('click',()=>{enrichmentCancel=true;els.enrichProgress.textContent+=' · остановка после текущего запроса…';});
   els.search.addEventListener('input',e=>{searchQuery=e.target.value;loadAnimeData();});
@@ -629,6 +706,7 @@ async function init() {
     await db.open();
     await importBundledLibraryIfNeeded();
     await loadAnimeData();
+    loadAniListGenreCollection();
   } catch(err) {
     console.error(err); showToast('Не удалось открыть локальную базу данных', 'error');
   }
@@ -636,6 +714,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.1';
+  $('app-version').textContent='v1.2';
 }
 document.addEventListener('DOMContentLoaded',init);
