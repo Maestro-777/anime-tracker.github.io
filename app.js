@@ -470,8 +470,9 @@ async function enrichOne(item, metadataMap=null) {
     };
     if(!item.posterUrl&&meta.apiPosterUrl) patch.posterUrl=meta.apiPosterUrl;
     const merged={...item,...patch};
-    if(!item.descriptionRu && meta.metadataProvider==='Shikimori' && /[А-Яа-яЁё]/.test(String(meta.description||''))) {
-      patch.descriptionRu=String(meta.description).slice(0,4000);
+    const shikimoriDescription=meta.metadataProvider==='Shikimori'?meta.description:(item.metadataProvider==='Shikimori'?item.description:'');
+    if(!item.descriptionRu && /[А-Яа-яЁё]/.test(String(shikimoriDescription||''))) {
+      patch.descriptionRu=String(shikimoriDescription).slice(0,4000);
       patch.descriptionRuSource='shikimori';
       patch.descriptionRuStatus='found';
       patch.descriptionRuUpdatedAt=new Date().toISOString();
