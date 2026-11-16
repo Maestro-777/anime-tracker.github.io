@@ -57,21 +57,32 @@ async function readResponse(response:Response) {
 async function anilistRequest(query:string,variables:Record<string,unknown>={}) {
   let lastError:any=null;
   for(const endpoint of ANILIST_ENDPOINTS) {
-    let response:Response;
-    try {
-      response=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json","User-Agent":USER_AGENT},body:JSON.stringify({query,variables}),signal:AbortSignal.timeout(12000)});
-    } catch(error) {
-      lastError=new Error(`AniList network error: ${error instanceof Error?error.message:String(error)}`);
-      continue;
+    for(let attempt=0;attempt<3;attempt++) {
+      let response:Response;
+      try {
+        response=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json","User-Agent":USER_AGENT},body:JSON.stringify({query,variables}),signal:AbortSignal.timeout(12000)});
+      } catch(error) {
+        lastError=Object.assign(new Error(`AniList network error: ${error instanceof Error?error.message:String(error)}`),{provider:"AniList"});
+        if(attempt<2){await sleep(600*2**attempt);continue;}
+        break;
+      }
+      const {text,data}=await readResponse(response);
+      if(response.ok) {
+        const payload=data||(()=>{throw new Error("AniList returned invalid JSON");})();
+        if(payload?.errors?.length)throw new Error(String(payload.errors[0]?.message||"AniList GraphQL error"));
+        return payload;
+      }
+      lastError=Object.assign(new Error(`AniList HTTP ${response.status}: ${text.slice(0,220)}`),{status:response.status,provider:"AniList"});
+      if(response.status===404)break;
+      if([408,425,429,500,502,503,504].includes(response.status)&&attempt<2) {
+        const reset=Number(response.headers.get("X-RateLimit-Reset")||0);
+        const retryAfter=Number(response.headers.get("Retry-After")||0);
+        const wait=retryAfter>0?retryAfter*1000:(reset>0?Math.max(1000,reset*1000-Date.now()+500):700*2**attempt);
+        await sleep(Math.min(60000,wait));
+        continue;
+      }
+      break;
     }
-    const {text,data}=response.ok?await readResponse(response):{text:await response.text().catch(()=>""),data:null};
-    if(response.ok) {
-      const payload=data||(()=>{throw new Error("AniList returned invalid JSON");})();
-      if(payload?.errors?.length)throw new Error(String(payload.errors[0]?.message||"AniList GraphQL error"));
-      return payload;
-    }
-    lastError=Object.assign(new Error(`AniList HTTP ${response.status}: ${text.slice(0,220)}`),{status:response.status,provider:"AniList"});
-    if(response.status!==404)break;
   }
   throw lastError||new Error("AniList is unavailable");
 }
