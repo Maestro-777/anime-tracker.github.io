@@ -1596,6 +1596,6 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service Worker:',err));
   }
-  $('app-version').textContent='v1.4.0 · Multi-API · Google Drive';
+  $('app-version').textContent='v1.4.1 · Без автоперевода';
 }
 document.addEventListener('DOMContentLoaded',init);
