@@ -10,12 +10,14 @@ function corsHeaders(origin: string | null) {
   };
 }
 function allowedSource(value: string) {
-  const url = new URL(value);
-  if(url.protocol!=="https:") return false;
-  if(/^s[1-6]\.anilist\.co$/.test(url.hostname)) return true;
-  if(["shikimori.one","desu.shikimori.one"].includes(url.hostname)) return url.pathname.startsWith("/system/animes/");
-  if(url.hostname==="media.kitsu.io") return true;
-  if(url.hostname==="ytmnsnvxjhpejidcndyw.supabase.co") return url.pathname.startsWith("/storage/v1/object/public/animevault-posters/");
+  let url: URL;
+  try { url = new URL(value); } catch { return false; }
+  if(url.protocol!=="https:" || (url.port && url.port!=="443") || url.username || url.password) return false;
+  const host=url.hostname.toLowerCase();
+  if(/^s[1-6]\.anilist\.co$/.test(host)) return true;
+  if((host==="shikimori.one" || host.endsWith(".shikimori.one")) && url.pathname.startsWith("/system/animes/")) return true;
+  if((host==="media.kitsu.io" || host==="media.kitsu.app") && url.pathname.startsWith("/anime/")) return true;
+  if(host==="ytmnsnvxjhpejidcndyw.supabase.co" && url.pathname.startsWith("/storage/v1/object/public/animevault-posters/")) return true;
   return false;
 }
 function jsonError(message: string,status: number,headers: Record<string,string>) {
@@ -30,19 +32,20 @@ Deno.serve(async (request: Request) => {
     const body=await request.json();
     const sourceUrl=String(body?.sourceUrl||"");
     if(!allowedSource(sourceUrl)) return jsonError("HTTPS poster source host/path is not on the AnimeVault allowlist",400,cors);
-    let current=new URL(sourceUrl), response: Response|null=null;
-    for(let attempt=0;attempt<4;attempt++) {
+    let current=new URL(sourceUrl), response: Response|null=null, redirects=0;
+    while(redirects<=5) {
       response=await fetch(current,{redirect:"manual",signal:AbortSignal.timeout(20000)});
-      if([301,302,303,307,308].includes(response.status)) {
-        const location=response.headers.get("location");
-        if(!location) return jsonError("Poster source redirect did not include a location",502,cors);
-        current=new URL(location,current);
-        if(!allowedSource(current.href)) return jsonError("Poster source redirected to a non-allowed host",400,cors);
-        continue;
-      }
-      break;
+      if(![301,302,303,307,308].includes(response.status)) break;
+      const location=response.headers.get("location");
+      if(!location) return jsonError("Poster source redirect did not include a location",502,cors);
+      const next=new URL(location,current);
+      if(!allowedSource(next.href)) return jsonError("Poster source redirected to a non-allowed host or path",400,cors);
+      current=next;
+      redirects++;
     }
-    if(!response||!response.ok) return jsonError(`Poster source returned HTTP ${response?.status||502}`,502,cors);
+    if(!response) return jsonError("Poster source returned no response",502,cors);
+    if([301,302,303,307,308].includes(response.status)) return jsonError("Poster source exceeded the redirect limit",502,cors);
+    if(!response.ok) return jsonError(`Poster source returned HTTP ${response.status}`,502,cors);
     const mimeType=(response.headers.get("content-type")||"").split(";")[0].trim().toLowerCase();
     if(!ALLOWED_TYPES.has(mimeType)) return jsonError(`Unsupported image content type: ${mimeType||"missing"}`,415,cors);
     const declared=Number(response.headers.get("content-length")||0);
