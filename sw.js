@@ -1,4 +1,4 @@
-const CACHE_NAME = 'animevault-shell-v145-poster-cdn';
+const CACHE_NAME = 'animevault-shell-v146-drive-session';
 const APP_SHELL = [
   './',
   './index.html',
